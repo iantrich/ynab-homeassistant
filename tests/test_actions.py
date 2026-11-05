@@ -15,8 +15,8 @@ def frozen(freezer):
     freezer.move_to("2026-11-05T12:00:00+00:00")
 
 
-async def _setup(hass, aioclient_mock, fixture, categories=None):
-    _register(aioclient_mock, fixture, categories=categories)
+async def _setup(hass, aioclient_mock, fixture, categories=None, month=None):
+    _register(aioclient_mock, fixture, categories=categories, month=month)
     entry = MockConfigEntry(
         domain="ynab",
         title="Household",
@@ -290,3 +290,156 @@ async def test_service_rejects_bad_entry(hass, aioclient_mock, fixture):
             await hass.services.async_call(
                 "ynab", "refresh", {"config_entry_id": entry_id}, blocking=True
             )
+
+
+# -- allocation -----------------------------------------------------------------
+
+
+def _month_with(fixture, month_key, rta, goals):
+    """The fixture month with goal_under_funded set per category id (milliunits)."""
+    month = copy.deepcopy(fixture("month"))
+    month["data"]["month"]["month"] = month_key
+    month["data"]["month"]["to_be_budgeted"] = rta
+    for c in month["data"]["month"]["categories"]:
+        c["goal_under_funded"] = goals.get(c["id"])
+        c["balance"] = 0
+        c["budgeted"] = 0
+    return month
+
+
+async def _alloc_setup(hass, aioclient_mock, fixture, *, this_rta=1000000, this_goals=None,
+                       next_goals=None, apply_rta=None, fail_next_groceries=False):
+    current = _month_with(
+        fixture, "2026-11-01", this_rta if apply_rta is None else apply_rta, this_goals or {}
+    )
+    entry = await _setup(hass, aioclient_mock, fixture, month=current)
+    store = entry.runtime_data.store
+    store.stage_mapping = {
+        "groups": {"g-bills": "bills", "g-everyday": "everyday"},
+        "categories": {},
+        "overflow_category_id": "c-dining",
+    }
+    aioclient_mock.get(
+        f"{BASE}/months/2026-11-01",
+        json=_month_with(fixture, "2026-11-01", this_rta, this_goals or {}),
+    )
+    aioclient_mock.get(
+        f"{BASE}/months/2026-12-01",
+        json=_month_with(fixture, "2026-12-01", 0, next_goals or {}),
+    )
+    if fail_next_groceries:
+        aioclient_mock.patch(
+            f"{BASE}/months/2026-12-01/categories/c-groceries", status=500, json={}
+        )
+    for month in ("2026-11-01", "2026-12-01"):
+        for cid in ("c-mortgage", "c-groceries", "c-dining", "c-gas"):
+            aioclient_mock.patch(
+                f"{BASE}/months/{month}/categories/{cid}", json={"data": {"category": {}}}
+            )
+    return entry
+
+
+async def test_propose_allocation_stores_json_safe_proposal(hass, aioclient_mock, fixture):
+    entry = await _alloc_setup(
+        hass, aioclient_mock, fixture,
+        this_goals={"c-mortgage": 600000}, next_goals={"c-groceries": 250000},
+    )
+    events = async_capture_events(hass, "ynab_proposal_created")
+    gets_before = len([c for c in aioclient_mock.mock_calls if c[0] == "GET"])
+    proposal = await entry.runtime_data.actions.propose_allocation(source="user:abc")
+    gets = [c for c in aioclient_mock.mock_calls if c[0] == "GET"][gets_before:]
+    assert len(gets) == 2
+    assert proposal["id"].startswith("a-")
+    assert proposal["kind"] == "allocation"
+    assert proposal["status"] == "pending"
+    assert proposal["rta_at_creation"] == "1000"
+    assert [(m["month"], m["category_id"], m["amount"]) for m in proposal["moves"]] == [
+        ("2026-11-01", "c-mortgage", "600.00"),
+        ("2026-12-01", "c-groceries", "250.00"),
+        ("2026-11-01", "c-dining", "150.00"),
+    ]
+    assert proposal["total"] == "1000.00"
+    import json
+    json.dumps(proposal)
+    assert entry.runtime_data.store.allocations[proposal["id"]]["status"] == "pending"
+    assert entry.runtime_data.store.proposals == {}
+    await hass.async_block_till_done()
+    assert events[0].data["kind"] == "allocation"
+    assert events[0].data["proposal_id"] == proposal["id"]
+    assert _writes(aioclient_mock) == []
+    assert hass.states.get("sensor.household_pending_proposals").state == "1"
+
+
+async def test_new_proposal_supersedes_pending_one(hass, aioclient_mock, fixture):
+    entry = await _alloc_setup(hass, aioclient_mock, fixture, this_goals={"c-mortgage": 100000})
+    actions = entry.runtime_data.actions
+    first = await actions.propose_allocation(source="llm")
+    second = await actions.propose_allocation(source="llm")
+    allocations = entry.runtime_data.store.allocations
+    assert allocations[first["id"]]["status"] == "superseded"
+    assert allocations[second["id"]]["status"] == "pending"
+    assert [p["id"] for p in actions.list_proposals()] == [second["id"]]
+
+
+async def test_apply_adds_each_move(hass, aioclient_mock, fixture):
+    entry = await _alloc_setup(
+        hass, aioclient_mock, fixture,
+        this_goals={"c-mortgage": 600000}, next_goals={"c-groceries": 250000},
+    )
+    actions = entry.runtime_data.actions
+    proposal = await actions.propose_allocation(source="llm")
+    applied = await actions.apply_allocation(proposal["id"], source="user:abc")
+    assert applied["status"] == "applied"
+    assert entry.runtime_data.store.allocations[proposal["id"]]["status"] == "applied"
+    writes = _writes(aioclient_mock)
+    assert [(str(w[1]).split("/months/")[1], w[2]) for w in writes] == [
+        ("2026-11-01/categories/c-mortgage", {"category": {"budgeted": 1250000}}),
+        ("2026-12-01/categories/c-groceries", {"category": {"budgeted": 250000}}),
+        ("2026-11-01/categories/c-dining", {"category": {"budgeted": 400000}}),
+    ]
+    # fixture budgeted: mortgage 650, dining 250, groceries (next month) 0
+    with pytest.raises(ServiceValidationError, match="applied"):
+        await actions.apply_allocation(proposal["id"], source="llm")
+
+
+async def test_apply_refuses_when_rta_dropped(hass, aioclient_mock, fixture):
+    entry = await _alloc_setup(
+        hass, aioclient_mock, fixture, this_goals={"c-mortgage": 600000}, apply_rta=500000
+    )
+    actions = entry.runtime_data.actions
+    proposal = await actions.propose_allocation(source="llm")
+    with pytest.raises(ServiceValidationError, match="ready_to_assign_dropped"):
+        await actions.apply_allocation(proposal["id"], source="llm")
+    assert _writes(aioclient_mock) == []
+    assert entry.runtime_data.store.allocations[proposal["id"]]["status"] == "pending"
+
+
+async def test_apply_partial_failure_records_what_was_applied(hass, aioclient_mock, fixture):
+    from homeassistant.exceptions import HomeAssistantError
+
+    entry = await _alloc_setup(
+        hass, aioclient_mock, fixture,
+        this_goals={"c-mortgage": 600000}, next_goals={"c-groceries": 250000},
+        fail_next_groceries=True,
+    )
+    actions = entry.runtime_data.actions
+    proposal = await actions.propose_allocation(source="llm")
+    with pytest.raises(HomeAssistantError, match="Mortgage"):
+        await actions.apply_allocation(proposal["id"], source="llm")
+    stored = entry.runtime_data.store.allocations[proposal["id"]]
+    assert stored["status"] == "partial"
+    assert [m["category_id"] for m in stored["applied_moves"]] == ["c-mortgage"]
+
+
+async def test_approve_and_reject_route_allocations(hass, aioclient_mock, fixture):
+    entry = await _alloc_setup(hass, aioclient_mock, fixture, this_goals={"c-mortgage": 600000})
+    actions = entry.runtime_data.actions
+    first = await actions.propose_allocation(source="llm")
+    result = await actions.approve_proposals([first["id"]], source="user:abc")
+    assert result == {"applied": [first["id"]], "skipped": {}}
+    second = await actions.propose_allocation(source="llm")
+    assert (await actions.reject_proposals([second["id"]], source="llm"))["rejected"] == [
+        second["id"]
+    ]
+    assert entry.runtime_data.store.allocations[second["id"]]["status"] == "rejected"
+    assert {p["id"] for p in actions.list_proposals("all")} >= {first["id"], second["id"]}

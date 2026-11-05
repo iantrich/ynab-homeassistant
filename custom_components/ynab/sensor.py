@@ -173,7 +173,13 @@ def _unapproved(c: YnabCoordinator) -> int:
 
 
 def _pending(c: YnabCoordinator) -> int:
-    return len([p for p in c.store.proposals.values() if p["status"] == "pending"])
+    return len(
+        [
+            p
+            for p in (*c.store.proposals.values(), *c.store.allocations.values())
+            if p["status"] == "pending"
+        ]
+    )
 
 
 @dataclass(frozen=True, kw_only=True)

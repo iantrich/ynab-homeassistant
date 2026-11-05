@@ -151,4 +151,28 @@ list_proposals:
             - approved
             - rejected
             - stale
+            - applied
+            - partial
+            - superseded
             - all
+propose_allocation:
+  description: Propose how to assign Ready to Assign across categories in priority order (response only). Nothing changes in YNAB until the proposal is approved or applied.
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: ynab
+apply_allocation:
+  description: Apply a pending allocation proposal to YNAB (response only).
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: ynab
+    proposal_id:
+      required: true
+      example: "a-1a2b3c"
+      selector:
+        text:

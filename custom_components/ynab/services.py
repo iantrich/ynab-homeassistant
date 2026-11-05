@@ -22,6 +22,8 @@ SERVICE_PROPOSE_TRANSACTION_UPDATE = "propose_transaction_update"
 SERVICE_APPROVE_PROPOSALS = "approve_proposals"
 SERVICE_REJECT_PROPOSALS = "reject_proposals"
 SERVICE_LIST_PROPOSALS = "list_proposals"
+SERVICE_PROPOSE_ALLOCATION = "propose_allocation"
+SERVICE_APPLY_ALLOCATION = "apply_allocation"
 
 
 def _decimal(value: Any) -> Decimal:
@@ -72,10 +74,12 @@ LIST_PROPOSALS_SCHEMA = vol.Schema(
     {
         **_ENTRY,
         vol.Optional("status", default="pending"): vol.In(
-            ["pending", "approved", "rejected", "stale", "all"]
+            ["pending", "approved", "rejected", "stale", "applied", "partial", "superseded", "all"]
         ),
     }
 )
+PROPOSE_ALLOCATION_SCHEMA = vol.Schema(_ENTRY)
+APPLY_ALLOCATION_SCHEMA = vol.Schema({**_ENTRY, vol.Required("proposal_id"): cv.string})
 
 
 def source_from_call(call: ServiceCall) -> str:
@@ -146,6 +150,14 @@ def async_register_services(hass: HomeAssistant) -> None:
     async def list_proposals(call: ServiceCall) -> dict[str, Any]:
         return {"proposals": _actions(hass, call).list_proposals(call.data["status"])}
 
+    async def propose_allocation(call: ServiceCall) -> dict[str, Any]:
+        return await _actions(hass, call).propose_allocation(source=source_from_call(call))
+
+    async def apply_allocation(call: ServiceCall) -> dict[str, Any]:
+        return await _actions(hass, call).apply_allocation(
+            call.data["proposal_id"], source=source_from_call(call)
+        )
+
     for name, handler, schema, response in (
         (SERVICE_UPDATE_TRANSACTION, update_transaction, UPDATE_TRANSACTION_SCHEMA, SupportsResponse.OPTIONAL),
         (SERVICE_UPDATE_TRANSACTIONS, update_transactions, UPDATE_TRANSACTIONS_SCHEMA, SupportsResponse.OPTIONAL),
@@ -155,6 +167,8 @@ def async_register_services(hass: HomeAssistant) -> None:
         (SERVICE_APPROVE_PROPOSALS, approve_proposals, PROPOSAL_IDS_SCHEMA, SupportsResponse.OPTIONAL),
         (SERVICE_REJECT_PROPOSALS, reject_proposals, PROPOSAL_IDS_SCHEMA, SupportsResponse.OPTIONAL),
         (SERVICE_LIST_PROPOSALS, list_proposals, LIST_PROPOSALS_SCHEMA, SupportsResponse.ONLY),
+        (SERVICE_PROPOSE_ALLOCATION, propose_allocation, PROPOSE_ALLOCATION_SCHEMA, SupportsResponse.ONLY),
+        (SERVICE_APPLY_ALLOCATION, apply_allocation, APPLY_ALLOCATION_SCHEMA, SupportsResponse.ONLY),
     ):
         hass.services.async_register(
             DOMAIN, name, handler, schema=schema, supports_response=response

@@ -14,6 +14,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.util import dt as dt_util
 
+from .allocation import compute_allocation
 from .client import YnabClient, YnabError
 from .const import EVENT_PROPOSAL_CREATED, EVENT_TRANSACTION_UPDATED
 from .coordinator import YnabCoordinator, YnabData
@@ -265,6 +266,163 @@ class YnabActions:
         await self._after_write()
         return result
 
+
+    # -- allocation ---------------------------------------------------------------
+
+    async def _fetch_month_categories(
+        self, month: str, current: dict[str, Category]
+    ) -> tuple[dict[str, Any], list[Category]]:
+        """Read one month; keeps only categories the coordinator considers eligible."""
+        try:
+            raw_month = await self.client.get_month(self.coordinator.plan_id, month)
+        except YnabError as err:
+            raise HomeAssistantError(f"Could not read month {month}: {err}") from err
+        cats = []
+        for raw in raw_month.get("categories", []):
+            known = current.get(raw["id"])
+            if known is None:
+                continue
+            cats.append(Category.from_api(raw, order=known.order, group_name=known.group_name))
+        return raw_month, cats
+
+    async def propose_allocation(self, *, source: str) -> dict[str, Any]:
+        """Work out where Ready to Assign should go; nothing is sent to YNAB."""
+        data = self.coordinator.data
+        if data is None:
+            raise ServiceValidationError("YNAB data is not loaded yet")
+        this_key = data.month
+        year, month = int(this_key[:4]), int(this_key[5:7])
+        next_key = f"{year + month // 12}-{month % 12 + 1:02d}-01"
+
+        eligible = {c.id: c for c in self.coordinator.eligible_categories()}
+        raw_this, this_cats = await self._fetch_month_categories(this_key, eligible)
+        _, next_cats = await self._fetch_month_categories(next_key, eligible)
+        available = to_decimal(raw_this.get("to_be_budgeted") or 0)
+
+        mapping = self.store.stage_mapping
+        result = compute_allocation(
+            available, this_cats, next_cats, this_key, next_key,
+            mapping, mapping.get("overflow_category_id"),
+        )
+
+        allocations = self.store.allocations
+        for earlier in allocations.values():
+            if earlier["status"] == "pending":
+                self._resolve(earlier, "superseded")
+        allocation_id = "a-" + secrets.token_hex(3)
+        while allocation_id in allocations:
+            allocation_id = "a-" + secrets.token_hex(3)
+        proposal = {
+            "id": allocation_id,
+            "kind": "allocation",
+            "moves": [
+                {
+                    "month": m.month,
+                    "category_id": m.category_id,
+                    "category_name": m.category_name,
+                    "amount": str(m.amount),
+                    "stage": m.stage,
+                    "reason": m.reason,
+                }
+                for m in result.moves
+            ],
+            "total": str(result.total),
+            "leftover_to_overflow": str(result.leftover_to_overflow),
+            "unfunded": [[name, str(amount)] for name, amount in result.unfunded],
+            "unstaged": result.unstaged,
+            "rta_at_creation": str(available),
+            "source": source,
+            "created_at": dt_util.utcnow().isoformat(),
+            "status": "pending",
+        }
+        allocations[allocation_id] = proposal
+        summary = (
+            f"Assign {result.total} of {available} Ready to Assign across "
+            f"{len(result.moves)} moves"
+        )
+        self.store.log(
+            "allocation_proposed",
+            proposal_id=allocation_id,
+            total=str(result.total),
+            moves=len(result.moves),
+            source=source,
+        )
+        self.hass.bus.async_fire(
+            EVENT_PROPOSAL_CREATED,
+            {
+                "entry_id": self.entry.entry_id,
+                "proposal_id": allocation_id,
+                "kind": "allocation",
+                "summary": summary,
+            },
+        )
+        self._proposals_changed()
+        return dict(proposal)
+
+    async def apply_allocation(self, proposal_id: str, *, source: str) -> dict[str, Any]:
+        """Apply a pending allocation move by move (adding to what is assigned)."""
+        proposal = self.store.allocations.get(proposal_id)
+        if proposal is None:
+            raise ServiceValidationError(f"Unknown allocation: {proposal_id}")
+        if proposal["status"] != "pending":
+            raise ServiceValidationError(
+                f"Allocation {proposal_id} is {proposal['status']}, not pending"
+            )
+        total = Decimal(proposal["total"])
+        try:
+            raw_month = await self.client.get_month(self.coordinator.plan_id, "current")
+        except YnabError as err:
+            raise HomeAssistantError(f"Could not read the current month: {err}") from err
+        available = to_decimal(raw_month.get("to_be_budgeted") or 0)
+        if available < total:
+            raise ServiceValidationError(
+                f"ready_to_assign_dropped: {available} is available but the "
+                f"allocation needs {total}; propose a new one"
+            )
+
+        # One write per (month, category): assign_money reads the cached
+        # amount for the current month, so repeated adds would overwrite.
+        groups: dict[tuple[str, str], list[dict]] = {}
+        for move in proposal["moves"]:
+            groups.setdefault((move["month"], move["category_id"]), []).append(move)
+
+        applied: list[dict] = []
+        for (month, category_id), moves in groups.items():
+            amount = sum((Decimal(m["amount"]) for m in moves), Decimal(0))
+            try:
+                await self.assign_money(
+                    category_id, amount, month=month, mode="add", source=source
+                )
+            except HomeAssistantError as err:
+                if not applied:
+                    raise
+                proposal["applied_moves"] = applied
+                proposal["status"] = "partial"
+                proposal["resolved_at"] = dt_util.utcnow().isoformat()
+                self.store.log(
+                    "allocation_partial",
+                    proposal_id=proposal_id,
+                    applied=len(applied),
+                    source=source,
+                )
+                self._proposals_changed()
+                done = ", ".join(
+                    f"{m['category_name']} {m['amount']} ({m['month']})" for m in applied
+                )
+                raise HomeAssistantError(
+                    f"Allocation stopped at {moves[0]['category_name']} ({err}). "
+                    f"Already applied: {done}"
+                ) from err
+            applied.extend(moves)
+
+        proposal["applied_moves"] = applied
+        self._resolve(proposal, "applied")
+        self.store.log(
+            "allocation_applied", proposal_id=proposal_id, total=str(total), source=source
+        )
+        self._proposals_changed()
+        return dict(proposal)
+
     # -- proposals ----------------------------------------------------------------
 
     async def propose_transaction_update(self, update: TxUpdate, *, source: str) -> str:
@@ -350,7 +508,7 @@ class YnabActions:
         return sorted(
             (
                 dict(p)
-                for p in self.store.proposals.values()
+                for p in (*self.store.proposals.values(), *self.store.allocations.values())
                 if status == "all" or p["status"] == status
             ),
             key=lambda p: p["created_at"],
@@ -362,7 +520,11 @@ class YnabActions:
         skipped: dict[str, str] = {}
         ready: list[tuple[dict, TxUpdate]] = []
         data = self.coordinator.data
+        allocation_ids: list[str] = []
         for pid in dict.fromkeys(ids):
+            if pid in self.store.allocations:
+                allocation_ids.append(pid)
+                continue
             proposal = proposals.get(pid)
             if proposal is None:
                 skipped[pid] = "unknown"
@@ -408,16 +570,27 @@ class YnabActions:
                 proposal_ids=[p["id"] for p, _ in ready],
                 source=source,
             )
+        applied = [p["id"] for p, _ in ready]
+        for pid in allocation_ids:
+            if self.store.allocations[pid]["status"] != "pending":
+                skipped[pid] = self.store.allocations[pid]["status"]
+                continue
+            try:
+                await self.apply_allocation(pid, source=source)
+            except ServiceValidationError as err:
+                skipped[pid] = str(err)  # stays pending
+                continue
+            applied.append(pid)
         if ready or skipped:
             self._proposals_changed()
-        return {"applied": [p["id"] for p, _ in ready], "skipped": skipped}
+        return {"applied": applied, "skipped": skipped}
 
     async def reject_proposals(self, ids: list[str], *, source: str) -> dict[str, Any]:
         """Dismiss pending proposals without changing YNAB."""
         rejected: list[str] = []
         skipped: dict[str, str] = {}
         for pid in dict.fromkeys(ids):
-            proposal = self.store.proposals.get(pid)
+            proposal = self.store.proposals.get(pid) or self.store.allocations.get(pid)
             if proposal is None:
                 skipped[pid] = "unknown"
             elif proposal["status"] != "pending":
@@ -442,14 +615,17 @@ class YnabActions:
                 self._resolve(proposal, "stale")
                 changed = True
         cutoff = dt_util.utcnow() - RESOLVED_RETENTION
-        old_ids = [
-            pid
-            for pid, p in self.store.proposals.items()
-            if p["status"] != "pending"
-            and dt_util.parse_datetime(p.get("resolved_at") or p["created_at"]) < cutoff
-        ]
-        for pid in old_ids:
-            del self.store.proposals[pid]
+        old_ids = []
+        for table in (self.store.proposals, self.store.allocations):
+            expired = [
+                pid
+                for pid, p in table.items()
+                if p["status"] != "pending"
+                and dt_util.parse_datetime(p.get("resolved_at") or p["created_at"]) < cutoff
+            ]
+            for pid in expired:
+                del table[pid]
+            old_ids += expired
         if changed or old_ids:
             self.store.schedule_save()
 
