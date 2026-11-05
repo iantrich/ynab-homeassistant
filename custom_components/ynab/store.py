@@ -69,6 +69,10 @@ class YnabStore:
             "initialized": self.initialized,
         }
 
+    def snapshot(self) -> dict[str, Any]:
+        """Return the persisted state as a JSON-serialisable dict."""
+        return self._as_dict()
+
     def schedule_save(self) -> None:
         """Save after a short delay, coalescing bursts of changes."""
         self._store.async_delay_save(self._as_dict, SAVE_DELAY_SECONDS)
