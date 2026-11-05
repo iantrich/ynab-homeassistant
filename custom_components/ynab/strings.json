@@ -4,17 +4,23 @@
       "user": {
         "title": "Connect to YNAB",
         "description": "Create a personal access token in YNAB under Account Settings, Developer Settings. It is stored by Home Assistant only.",
-        "data": { "api_token": "Personal access token" }
+        "data": {
+          "api_token": "Personal access token"
+        }
       },
       "plan": {
         "title": "Choose a plan",
         "description": "Pick the YNAB plan (budget) to track.",
-        "data": { "plan_id": "Plan" }
+        "data": {
+          "plan_id": "Plan"
+        }
       },
       "reauth_confirm": {
         "title": "Re-authenticate YNAB",
         "description": "The token for {plan_name} no longer works. Enter a new personal access token.",
-        "data": { "api_token": "Personal access token" }
+        "data": {
+          "api_token": "Personal access token"
+        }
       }
     },
     "error": {
@@ -50,7 +56,9 @@
       "stages": {
         "title": "Allocation stages",
         "description": "Assign each category group to a waterfall stage. Per-category overrides are set with the set_stage_mapping tool.",
-        "data": { "overflow_category_id": "Overflow category" }
+        "data": {
+          "overflow_category_id": "Overflow category"
+        }
       },
       "low_overrides": {
         "title": "Low-bucket overrides",
@@ -61,7 +69,9 @@
         }
       }
     },
-    "abort": { "not_loaded": "Load the integration before changing these options." }
+    "abort": {
+      "not_loaded": "Load the integration before changing these options."
+    }
   },
   "selector": {
     "stage": {
@@ -71,6 +81,24 @@
         "fun": "Fun",
         "savings": "Savings",
         "none": "Not allocated"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "ready_to_assign": {
+        "name": "Ready to Assign"
+      },
+      "unapproved": {
+        "name": "Unapproved transactions"
+      },
+      "proposals": {
+        "name": "Pending proposals"
+      }
+    },
+    "binary_sensor": {
+      "low": {
+        "name": "{category} low"
       }
     }
   }

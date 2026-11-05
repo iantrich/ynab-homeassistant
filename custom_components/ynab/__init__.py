@@ -14,8 +14,7 @@ from .client import YnabClient
 from .coordinator import YnabCoordinator
 from .store import YnabStore
 
-# Task 6 adds the sensor and binary_sensor platforms here.
-PLATFORMS: list[Platform] = []
+PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR]
 
 
 @dataclass
