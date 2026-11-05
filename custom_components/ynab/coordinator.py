@@ -138,7 +138,9 @@ class YnabCoordinator(DataUpdateCoordinator[YnabData]):
         old = None if full else self.data
         new = self._merge(old, raw_accounts, raw_groups, raw_txs, month)
 
-        # Only now that every call succeeded do we advance knowledge.
+        # Commit the merged snapshot first, then advance knowledge, so a
+        # failure in _after_sync can never lose a delta.
+        self.data = new
         knowledge.update(
             accounts=k_accounts, categories=k_categories, transactions=k_transactions
         )
@@ -214,7 +216,6 @@ class YnabCoordinator(DataUpdateCoordinator[YnabData]):
                 "delta": float(new.ready_to_assign - old.ready_to_assign),
             }
             self.hass.bus.async_fire(EVENT_READY_TO_ASSIGN_INCREASED, payload)
-            store.log("ready_to_assign_increased", **payload)
 
         store.low_state = {
             cat.id: is_low(cat, self.low_share(cat.id))
@@ -223,7 +224,10 @@ class YnabCoordinator(DataUpdateCoordinator[YnabData]):
         store.schedule_save()
 
         for cb in list(self.on_synced):
-            cb(old, new)
+            try:
+                cb(old, new)
+            except Exception:  # noqa: BLE001 - one listener must not break a sync
+                _LOGGER.exception("YNAB sync listener failed")
 
     def _fire_imported(self, tx: Transaction) -> None:
         payload = {
@@ -244,13 +248,6 @@ class YnabCoordinator(DataUpdateCoordinator[YnabData]):
             "memo": tx.memo,
         }
         self.hass.bus.async_fire(EVENT_TRANSACTION_IMPORTED, payload)
-        self.store.log(
-            "transaction_imported",
-            transaction_id=tx.id,
-            payee_name=tx.payee_name,
-            amount=payload["amount"],
-            date=payload["date"],
-        )
 
 
 def _eligible(categories: dict[str, Category]) -> list[Category]:

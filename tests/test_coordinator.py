@@ -151,7 +151,7 @@ async def test_deleted_transaction_removed_without_event(hass, aioclient_mock, f
     gone = copy.deepcopy(fixture("transactions")["data"]["transactions"][2])
     assert gone["id"] == "t-mortgage"
     gone["deleted"] = True
-    _register(aioclient_mock, fixture, txs={"data": {"transactions": [gone]}}, k=(1, 2, 3))
+    _register(aioclient_mock, fixture, txs={"data": {"transactions": [gone]}}, k=(2001, 2002, 2003))
     new = await _poll(coord)
     await hass.async_block_till_done()
     assert "t-mortgage" not in new.transactions
@@ -240,3 +240,37 @@ async def test_sync_listener_called_and_removable(hass, aioclient_mock, fixture)
     remove()
     await _poll(coord)
     assert len(calls) == 1
+
+
+async def test_raising_listener_does_not_lose_delta(hass, aioclient_mock, fixture):
+    _register(aioclient_mock, fixture)
+    coord, _ = await _make(hass)
+
+    def boom(old, new):
+        raise RuntimeError("listener bug")
+
+    coord.add_sync_listener(boom)
+    await _poll(coord)
+    assert coord.data is not None and coord._synced_once
+
+    delta = {"data": {"transactions": [
+        {**copy.deepcopy(fixture("transactions")["data"]["transactions"][0]), "id": "t-new"}
+    ]}}
+    _register(aioclient_mock, fixture, txs=delta, k=(1101, 1102, 1103))
+    await _poll(coord)
+    assert "t-new" in coord.data.transactions
+    assert "t-mortgage" in coord.data.transactions  # earlier snapshot retained
+
+
+async def test_network_error_keeps_knowledge(hass, aioclient_mock, fixture):
+    import aiohttp
+
+    _register(aioclient_mock, fixture)
+    coord, _ = await _make(hass)
+    await _poll(coord)
+    before = dict(coord.store.knowledge)
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(f"{BASE}/accounts", exc=aiohttp.ClientError("down"))
+    with pytest.raises(UpdateFailed):
+        await coord._async_update_data()
+    assert coord.store.knowledge == before
