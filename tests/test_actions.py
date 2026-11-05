@@ -27,7 +27,7 @@ async def _setup(hass, aioclient_mock, fixture, categories=None):
     await hass.async_block_till_done()
     aioclient_mock.patch(f"{BASE}/transactions", json={"data": {"transactions": []}})
     aioclient_mock.patch(
-        f"{BASE}/months/current/categories/c-gas", json={"data": {"category": {}}}
+        f"{BASE}/months/2026-11-01/categories/c-gas", json={"data": {"category": {}}}
     )
     return entry
 
@@ -77,7 +77,7 @@ async def test_payee_and_memo_use_payee_name(hass, aioclient_mock, fixture):
         source="llm",
     )
     assert _writes(aioclient_mock)[0][2]["transactions"][0] == {
-        "id": "t-deposit", "payee_name": "Costco", "memo": "bulk"
+        "id": "t-deposit", "payee_name": "Costco", "payee_id": None, "memo": "bulk"
     }
 
 
@@ -98,15 +98,52 @@ async def test_force_allows_approved(hass, aioclient_mock, fixture):
     assert _writes(aioclient_mock)[0][2]["transactions"] == [{"id": "t-mortgage", "memo": "x"}]
 
 
-@pytest.mark.parametrize("tx_id", ["t-split", "t-transfer"])
-async def test_refuses_category_on_split_or_transfer(hass, aioclient_mock, fixture, tx_id):
+@pytest.mark.parametrize(
+    ("tx_id", "field", "value", "match"),
+    [
+        ("t-split", "category", "Groceries", "split"),
+        ("t-transfer", "category", "Groceries", "transfer"),
+        ("t-transfer", "payee_name", "Costco", "transfer"),
+    ],
+)
+async def test_refuses_category_or_payee_on_split_or_transfer(
+    hass, aioclient_mock, fixture, tx_id, field, value, match
+):
     entry = await _setup(hass, aioclient_mock, fixture)
-    with pytest.raises(ServiceValidationError):
+    with pytest.raises(ServiceValidationError, match=match):
         await entry.runtime_data.actions.update_transactions(
-            [{"transaction_id": tx_id, "category": "Groceries", "force": True}],
+            [{"transaction_id": tx_id, field: value, "force": True}],
             source="llm",
         )
     assert _writes(aioclient_mock) == []
+
+
+async def test_missing_transaction_id_is_validation_error(hass, aioclient_mock, fixture):
+    entry = await _setup(hass, aioclient_mock, fixture)
+    with pytest.raises(ServiceValidationError, match="transaction_id"):
+        await entry.runtime_data.actions.update_transactions([{"memo": "x"}], source="llm")
+    assert _writes(aioclient_mock) == []
+
+
+async def test_transaction_category_includes_inflow_not_card_payments(
+    hass, aioclient_mock, fixture
+):
+    entry = await _setup(hass, aioclient_mock, fixture)
+    actions = entry.runtime_data.actions
+    assert actions.resolve_category("Inflow: Ready to Assign", for_transaction=True).id == "c-rta"
+    await actions.update_transactions(
+        [{"transaction_id": "t-deposit", "category": "Inflow: Ready to Assign"}],
+        source="llm",
+    )
+    assert _writes(aioclient_mock)[0][2]["transactions"][0]["category_id"] == "c-rta"
+    for name in ("Chase Visa", "Old Stuff (hidden)"):
+        with pytest.raises(ServiceValidationError, match="Unknown"):
+            actions.resolve_category(name, for_transaction=True)
+    # allocation set still excludes it
+    with pytest.raises(ServiceValidationError, match="Unknown"):
+        actions.resolve_category("Inflow: Ready to Assign")
+    with pytest.raises(ServiceValidationError, match="Unknown"):
+        await actions.assign_money("Inflow: Ready to Assign", Decimal(1), source="llm")
 
 
 async def test_refuses_unknown_and_deleted_ids_and_empty_change(hass, aioclient_mock, fixture):
@@ -181,7 +218,7 @@ async def test_assign_money_add_mode(hass, aioclient_mock, fixture):
     assert new == Decimal("75")
     call = _writes(aioclient_mock)[0]
     assert call[0] == "PATCH"
-    assert str(call[1]).endswith("/months/current/categories/c-gas")
+    assert str(call[1]).endswith("/months/2026-11-01/categories/c-gas")
     assert call[2] == {"category": {"budgeted": 75000}}
     assert entry.runtime_data.store.activity[-1]["kind"] == "money_assigned"
 

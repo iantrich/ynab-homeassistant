@@ -22,6 +22,7 @@ _LOGGER = logging.getLogger(__name__)
 
 MAX_MEMO_LENGTH = 500
 MAX_BATCH = 100
+CREDIT_CARD_GROUP_NAME = "Credit Card Payments"
 _MONTH_RE = re.compile(r"^\d{4}-\d{2}-01$")
 
 
@@ -55,9 +56,34 @@ class YnabActions:
 
     # -- lookups (no I/O) ---------------------------------------------------------
 
-    def resolve_category(self, ref: str) -> Category:
-        """Find an eligible category by id, else by case-insensitive exact name."""
-        eligible = self.coordinator.eligible_categories()
+    def _transaction_categories(self) -> list[Category]:
+        """Categories a transaction may use.
+
+        Unlike allocation, this includes "Inflow: Ready to Assign" (YNAB's
+        normal category for income) but still excludes Credit Card Payments.
+        """
+        data = self.coordinator.data
+        if data is None:
+            return []
+        return [
+            c
+            for c in data.categories.values()
+            if not c.hidden
+            and not c.deleted
+            and c.group_name != CREDIT_CARD_GROUP_NAME
+        ]
+
+    def resolve_category(self, ref: str, *, for_transaction: bool = False) -> Category:
+        """Find a category by id, else by case-insensitive exact name.
+
+        Defaults to the allocation-eligible set (used by assign_money); with
+        ``for_transaction`` the wider transaction-categorization set is used.
+        """
+        eligible = (
+            self._transaction_categories()
+            if for_transaction
+            else self.coordinator.eligible_categories()
+        )
         for cat in eligible:
             if cat.id == ref:
                 return cat
@@ -78,7 +104,9 @@ class YnabActions:
         Pure: performs no I/O, so callers can validate before sending anything.
         """
         data = self.coordinator.data
-        tx_id = update["transaction_id"]
+        tx_id = update.get("transaction_id")
+        if not tx_id or not isinstance(tx_id, str):
+            raise ServiceValidationError("transaction_id is required")
         tx = data.transactions.get(tx_id) if data else None
         if tx is None:
             raise ServiceValidationError(f"Unknown transaction: {tx_id}")
@@ -97,12 +125,18 @@ class YnabActions:
                 raise ServiceValidationError(
                     f"Transaction {tx_id} is a transfer; it has no category to change"
                 )
-            patch["category_id"] = self.resolve_category(update["category"]).id
+            patch["category_id"] = self.resolve_category(update["category"], for_transaction=True).id
         if update.get("payee_name") is not None:
+            if tx.transfer_account_id:
+                raise ServiceValidationError(
+                    f"Transaction {tx_id} is a transfer; changing its payee would "
+                    "break the link to the other account"
+                )
             payee = update["payee_name"].strip()
             if not payee:
                 raise ServiceValidationError("payee_name cannot be empty")
             patch["payee_name"] = payee
+            patch["payee_id"] = None  # so YNAB matches/creates by name
         if update.get("memo") is not None:
             if len(update["memo"]) > MAX_MEMO_LENGTH:
                 raise ServiceValidationError(
@@ -125,12 +159,11 @@ class YnabActions:
             raise ServiceValidationError("No updates given")
         if len(updates) > MAX_BATCH:
             raise ServiceValidationError(f"At most {MAX_BATCH} updates per call")
-        ids = [u["transaction_id"] for u in updates]
-        if len(set(ids)) != len(ids):
-            raise ServiceValidationError("Duplicate transaction ids in one call")
-
         # All-or-nothing: nothing is sent unless every update is valid.
         validated = [self._validate_update(u) for u in updates]
+        ids = [tx.id for tx, _ in validated]
+        if len(set(ids)) != len(ids):
+            raise ServiceValidationError("Duplicate transaction ids in one call")
 
         try:
             await self.client.update_transactions(
@@ -188,7 +221,7 @@ class YnabActions:
         cat = self.resolve_category(category)
         data = self.coordinator.data
         if month == "current" or month == data.month:
-            api_month = "current"
+            api_month = data.month  # explicit, so a rollover can't mismatch
             existing = cat.budgeted
         else:
             api_month = month
