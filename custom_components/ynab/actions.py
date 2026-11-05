@@ -5,16 +5,18 @@ from __future__ import annotations
 from decimal import Decimal
 import logging
 import re
-from datetime import date
+from datetime import date, timedelta
+import secrets
 from typing import Any, Literal, NotRequired, Required, TypedDict
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.util import dt as dt_util
 
 from .client import YnabClient, YnabError
-from .const import EVENT_TRANSACTION_UPDATED
-from .coordinator import YnabCoordinator
+from .const import EVENT_PROPOSAL_CREATED, EVENT_TRANSACTION_UPDATED
+from .coordinator import YnabCoordinator, YnabData
 from .models import Category, Transaction, to_decimal, to_milliunits
 from .store import YnabStore
 
@@ -22,6 +24,7 @@ _LOGGER = logging.getLogger(__name__)
 
 MAX_MEMO_LENGTH = 500
 MAX_BATCH = 100
+RESOLVED_RETENTION = timedelta(days=30)
 CREDIT_CARD_GROUP_NAME = "Credit Card Payments"
 _MONTH_RE = re.compile(r"^\d{4}-\d{2}-01$")
 
@@ -262,6 +265,203 @@ class YnabActions:
         await self._after_write()
         return result
 
+    # -- proposals ----------------------------------------------------------------
+
+    async def propose_transaction_update(self, update: TxUpdate, *, source: str) -> str:
+        """Record a suggested change; nothing is sent to YNAB until approved."""
+        # Approval never forces, so a proposal for an approved transaction is moot.
+        checked = {k: v for k, v in update.items() if k != "force"}
+        tx, patch = self._validate_update(checked)  # type: ignore[arg-type]
+
+        changes: dict[str, Any] = {}
+        if "category_id" in patch:
+            cat = self.coordinator.data.categories.get(patch["category_id"])
+            changes["category_id"] = patch["category_id"]
+            changes["category_name"] = cat.name if cat else None
+        if "payee_name" in patch:
+            changes["payee_name"] = patch["payee_name"]
+        if "memo" in patch:
+            changes["memo"] = patch["memo"]
+        if "approved" in patch:
+            changes["approve"] = patch["approved"]
+
+        proposals = self.store.proposals
+        existing = next(
+            (
+                p
+                for p in proposals.values()
+                if p["status"] == "pending"
+                and p["kind"] == "transaction"
+                and p["transaction_id"] == tx.id
+            ),
+            None,
+        )
+        if existing is not None:
+            proposal_id = existing["id"]
+        else:
+            proposal_id = "p-" + secrets.token_hex(3)
+            while proposal_id in proposals:
+                proposal_id = "p-" + secrets.token_hex(3)
+        proposals[proposal_id] = {
+            "id": proposal_id,
+            "kind": "transaction",
+            "transaction_id": tx.id,
+            "changes": changes,
+            "snapshot": {
+                "date": tx.date.isoformat(),
+                "amount": float(tx.amount),
+                "account_name": tx.account_name,
+                "import_payee_name": tx.import_payee_name,
+                "category_id": tx.category_id,
+            },
+            "source": source,
+            "created_at": dt_util.utcnow().isoformat(),
+            "status": "pending",
+        }
+        summary = (
+            f"{tx.account_name or 'Account'} {tx.date.isoformat()} {float(tx.amount):.2f}"
+            f" ({tx.payee_name or tx.import_payee_name or 'no payee'}): "
+            + ", ".join(
+                f"{k}={changes.get('category_name') if k == 'category_id' else v}"
+                for k, v in changes.items()
+                if k != "category_name"
+            )
+        )
+        self.store.log(
+            "proposal_created",
+            proposal_id=proposal_id,
+            transaction_id=tx.id,
+            source=source,
+        )
+        self.hass.bus.async_fire(
+            EVENT_PROPOSAL_CREATED,
+            {
+                "entry_id": self.entry.entry_id,
+                "proposal_id": proposal_id,
+                "kind": "transaction",
+                "summary": summary,
+            },
+        )
+        self._proposals_changed()
+        return proposal_id
+
+    def list_proposals(self, status: str = "pending") -> list[dict]:
+        """Proposals with the given status ("all" for every one), oldest first."""
+        return sorted(
+            (
+                dict(p)
+                for p in self.store.proposals.values()
+                if status == "all" or p["status"] == status
+            ),
+            key=lambda p: p["created_at"],
+        )
+
+    async def approve_proposals(self, ids: list[str], *, source: str) -> dict[str, Any]:
+        """Apply pending transaction proposals in one bulk update."""
+        proposals = self.store.proposals
+        skipped: dict[str, str] = {}
+        ready: list[tuple[dict, TxUpdate]] = []
+        data = self.coordinator.data
+        for pid in dict.fromkeys(ids):
+            proposal = proposals.get(pid)
+            if proposal is None:
+                skipped[pid] = "unknown"
+            elif proposal["status"] != "pending":
+                skipped[pid] = proposal["status"]
+            elif proposal["kind"] != "transaction":
+                skipped[pid] = "unsupported_kind"
+            elif _is_stale(proposal, data):
+                self._resolve(proposal, "stale")
+                skipped[pid] = "stale"
+            else:
+                changes = proposal["changes"]
+                update: TxUpdate = {"transaction_id": proposal["transaction_id"]}
+                if "category_id" in changes:
+                    update["category"] = changes["category_id"]
+                if "payee_name" in changes:
+                    update["payee_name"] = changes["payee_name"]
+                if "memo" in changes:
+                    update["memo"] = changes["memo"]
+                update["approve"] = changes.get("approve", True)
+                try:
+                    self._validate_update(update)
+                except ServiceValidationError as err:
+                    skipped[pid] = str(err)  # stays pending; may be fixable
+                    continue
+                ready.append((proposal, update))
+
+        if ready:
+            # Resolve first: the refresh inside update_transactions runs the
+            # stale listener, which must not see these as still pending.
+            for proposal, _ in ready:
+                self._resolve(proposal, "approved")
+            try:
+                await self.update_transactions([u for _, u in ready], source=source)
+            except Exception:
+                for proposal, _ in ready:
+                    proposal["status"] = "pending"
+                    proposal.pop("resolved_at", None)
+                self._proposals_changed()
+                raise
+            self.store.log(
+                "proposals_approved",
+                proposal_ids=[p["id"] for p, _ in ready],
+                source=source,
+            )
+        if ready or skipped:
+            self._proposals_changed()
+        return {"applied": [p["id"] for p, _ in ready], "skipped": skipped}
+
+    async def reject_proposals(self, ids: list[str], *, source: str) -> dict[str, Any]:
+        """Dismiss pending proposals without changing YNAB."""
+        rejected: list[str] = []
+        skipped: dict[str, str] = {}
+        for pid in dict.fromkeys(ids):
+            proposal = self.store.proposals.get(pid)
+            if proposal is None:
+                skipped[pid] = "unknown"
+            elif proposal["status"] != "pending":
+                skipped[pid] = proposal["status"]
+            else:
+                self._resolve(proposal, "rejected")
+                rejected.append(pid)
+        if rejected:
+            self.store.log("proposals_rejected", proposal_ids=rejected, source=source)
+            self._proposals_changed()
+        return {"rejected": rejected, "skipped": skipped}
+
+    def on_synced(self, old: YnabData | None, new: YnabData) -> None:
+        """Sync listener: mark outdated proposals stale and prune old ones."""
+        changed = False
+        for proposal in self.store.proposals.values():
+            if (
+                proposal["status"] == "pending"
+                and proposal["kind"] == "transaction"
+                and _is_stale(proposal, new)
+            ):
+                self._resolve(proposal, "stale")
+                changed = True
+        cutoff = dt_util.utcnow() - RESOLVED_RETENTION
+        old_ids = [
+            pid
+            for pid, p in self.store.proposals.items()
+            if p["status"] != "pending"
+            and dt_util.parse_datetime(p.get("resolved_at") or p["created_at"]) < cutoff
+        ]
+        for pid in old_ids:
+            del self.store.proposals[pid]
+        if changed or old_ids:
+            self.store.schedule_save()
+
+    @staticmethod
+    def _resolve(proposal: dict, status: str) -> None:
+        proposal["status"] = status
+        proposal["resolved_at"] = dt_util.utcnow().isoformat()
+
+    def _proposals_changed(self) -> None:
+        self.store.schedule_save()
+        self.coordinator.async_update_listeners()
+
     async def refresh(self) -> None:
         """Poll YNAB now."""
         await self.coordinator.async_request_refresh()
@@ -269,3 +469,13 @@ class YnabActions:
     async def _after_write(self) -> None:
         self.coordinator.async_update_listeners()
         await self.coordinator.async_request_refresh()
+
+
+def _is_stale(proposal: dict, data: YnabData | None) -> bool:
+    """A transaction proposal is stale once its transaction changed underneath it."""
+    tx = data.transactions.get(proposal["transaction_id"]) if data else None
+    return (
+        tx is None
+        or tx.approved
+        or tx.category_id != proposal["snapshot"]["category_id"]
+    )

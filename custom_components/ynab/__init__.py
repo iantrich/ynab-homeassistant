@@ -58,12 +58,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: YnabConfigEntry) -> bool
     )
     await coordinator.async_config_entry_first_refresh()
 
+    actions = YnabActions(hass, entry, client, coordinator, store)
     entry.runtime_data = YnabRuntime(
-        client=client,
-        store=store,
-        coordinator=coordinator,
-        actions=YnabActions(hass, entry, client, coordinator, store),
+        client=client, store=store, coordinator=coordinator, actions=actions
     )
+    entry.async_on_unload(coordinator.add_sync_listener(actions.on_synced))
+    # The first refresh ran before the listener existed; catch up on restored proposals.
+    actions.on_synced(None, coordinator.data)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     # Reload on options changes so scan_minutes and entity selections apply.
     loaded_options = dict(entry.options)

@@ -82,3 +82,73 @@ refresh:
       selector:
         config_entry:
           integration: ynab
+propose_transaction_update:
+  description: Record a suggested transaction change. Nothing changes in YNAB until it is approved.
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: ynab
+    transaction_id:
+      required: true
+      selector:
+        text:
+    category:
+      description: Category id or exact name.
+      selector:
+        text:
+    payee_name:
+      selector:
+        text:
+    memo:
+      selector:
+        text:
+    approve:
+      description: Whether approving the proposal also approves the transaction (default true).
+      selector:
+        boolean:
+approve_proposals:
+  description: Apply pending proposals to YNAB.
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: ynab
+    proposal_ids:
+      required: true
+      example: '["p-1a2b3c"]'
+      selector:
+        object:
+reject_proposals:
+  description: Dismiss pending proposals without changing YNAB.
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: ynab
+    proposal_ids:
+      required: true
+      example: '["p-1a2b3c"]'
+      selector:
+        object:
+list_proposals:
+  description: Return proposals (response only).
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: ynab
+    status:
+      default: pending
+      selector:
+        select:
+          options:
+            - pending
+            - approved
+            - rejected
+            - stale
+            - all

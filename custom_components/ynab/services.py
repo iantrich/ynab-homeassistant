@@ -18,6 +18,10 @@ SERVICE_UPDATE_TRANSACTION = "update_transaction"
 SERVICE_UPDATE_TRANSACTIONS = "update_transactions"
 SERVICE_ASSIGN_MONEY = "assign_money"
 SERVICE_REFRESH = "refresh"
+SERVICE_PROPOSE_TRANSACTION_UPDATE = "propose_transaction_update"
+SERVICE_APPROVE_PROPOSALS = "approve_proposals"
+SERVICE_REJECT_PROPOSALS = "reject_proposals"
+SERVICE_LIST_PROPOSALS = "list_proposals"
 
 
 def _decimal(value: Any) -> Decimal:
@@ -59,6 +63,19 @@ ASSIGN_MONEY_SCHEMA = vol.Schema(
     }
 )
 REFRESH_SCHEMA = vol.Schema(_ENTRY)
+_PROPOSE_FIELDS = {k: v for k, v in _UPDATE_FIELDS.items() if k != "force"}
+PROPOSE_SCHEMA = vol.Schema({**_ENTRY, **_PROPOSE_FIELDS})
+PROPOSAL_IDS_SCHEMA = vol.Schema(
+    {**_ENTRY, vol.Required("proposal_ids"): vol.All(cv.ensure_list, [cv.string])}
+)
+LIST_PROPOSALS_SCHEMA = vol.Schema(
+    {
+        **_ENTRY,
+        vol.Optional("status", default="pending"): vol.In(
+            ["pending", "approved", "rejected", "stale", "all"]
+        ),
+    }
+)
 
 
 def source_from_call(call: ServiceCall) -> str:
@@ -109,11 +126,35 @@ def async_register_services(hass: HomeAssistant) -> None:
     async def refresh(call: ServiceCall) -> None:
         await _actions(hass, call).refresh()
 
+    async def propose_transaction_update(call: ServiceCall) -> dict[str, Any]:
+        fields = {k: v for k, v in call.data.items() if k != "config_entry_id"}
+        proposal_id = await _actions(hass, call).propose_transaction_update(
+            fields, source=source_from_call(call)  # type: ignore[arg-type]
+        )
+        return {"proposal_id": proposal_id}
+
+    async def approve_proposals(call: ServiceCall) -> dict[str, Any]:
+        return await _actions(hass, call).approve_proposals(
+            call.data["proposal_ids"], source=source_from_call(call)
+        )
+
+    async def reject_proposals(call: ServiceCall) -> dict[str, Any]:
+        return await _actions(hass, call).reject_proposals(
+            call.data["proposal_ids"], source=source_from_call(call)
+        )
+
+    async def list_proposals(call: ServiceCall) -> dict[str, Any]:
+        return {"proposals": _actions(hass, call).list_proposals(call.data["status"])}
+
     for name, handler, schema, response in (
         (SERVICE_UPDATE_TRANSACTION, update_transaction, UPDATE_TRANSACTION_SCHEMA, SupportsResponse.OPTIONAL),
         (SERVICE_UPDATE_TRANSACTIONS, update_transactions, UPDATE_TRANSACTIONS_SCHEMA, SupportsResponse.OPTIONAL),
         (SERVICE_ASSIGN_MONEY, assign_money, ASSIGN_MONEY_SCHEMA, SupportsResponse.OPTIONAL),
         (SERVICE_REFRESH, refresh, REFRESH_SCHEMA, SupportsResponse.NONE),
+        (SERVICE_PROPOSE_TRANSACTION_UPDATE, propose_transaction_update, PROPOSE_SCHEMA, SupportsResponse.OPTIONAL),
+        (SERVICE_APPROVE_PROPOSALS, approve_proposals, PROPOSAL_IDS_SCHEMA, SupportsResponse.OPTIONAL),
+        (SERVICE_REJECT_PROPOSALS, reject_proposals, PROPOSAL_IDS_SCHEMA, SupportsResponse.OPTIONAL),
+        (SERVICE_LIST_PROPOSALS, list_proposals, LIST_PROPOSALS_SCHEMA, SupportsResponse.ONLY),
     ):
         hass.services.async_register(
             DOMAIN, name, handler, schema=schema, supports_response=response
