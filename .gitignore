@@ -1,6 +1,7 @@
-.superpowers/
-.venv/
 __pycache__/
 *.py[cod]
+.venv/
+venv/
 .DS_Store
+.superpowers/
 .pytest_cache/
