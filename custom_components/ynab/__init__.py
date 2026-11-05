@@ -52,12 +52,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: YnabConfigEntry) -> bool
     )
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     # Reload on options changes so scan_minutes and entity selections apply.
+    loaded_options = dict(entry.options)
+
+    async def _async_update_listener(
+        hass: HomeAssistant, updated: YnabConfigEntry
+    ) -> None:
+        # Data-only updates (reauth) reload themselves; avoid a second reload.
+        if dict(updated.options) != loaded_options:
+            await hass.config_entries.async_reload(updated.entry_id)
+
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
-
-
-async def _async_update_listener(hass: HomeAssistant, entry: YnabConfigEntry) -> None:
-    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: YnabConfigEntry) -> bool:

@@ -132,7 +132,7 @@ async def test_reauth_wrong_account(hass, aioclient_mock, fixture):
 async def loaded(hass, aioclient_mock, fixture, monkeypatch):
     """A fully set-up entry (real setup, not the no-op patch)."""
     monkeypatch.undo()
-    from tests.test_coordinator import _register
+    from tests.conftest import _register
 
     monkeypatch.setattr("custom_components.ynab.coordinator.WINDOW_DAYS", 100000)
     _register(aioclient_mock, fixture)
@@ -219,3 +219,14 @@ async def test_options_low_overrides(hass, loaded):
         result["flow_id"], {"category_id": cat.id}
     )
     assert cat.id not in store.low_share_overrides
+
+
+async def test_options_general_aborts_when_not_loaded(hass):
+    entry = MockConfigEntry(domain=DOMAIN, unique_id=PLAN_ID, data={"api_token": "t", "plan_id": "p"})
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "general"}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "not_loaded"

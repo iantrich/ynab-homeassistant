@@ -9,6 +9,7 @@ import aiohttp
 import probatio
 from homeassistant.config_entries import (
     ConfigEntry,
+    ConfigEntryState,
     ConfigFlow,
     ConfigFlowResult,
     OptionsFlow,
@@ -194,7 +195,10 @@ class YnabOptionsFlow(OptionsFlow):
 
     @property
     def _runtime(self):
-        return getattr(self.config_entry, "runtime_data", None)
+        entry = self.config_entry
+        if entry.state is not ConfigEntryState.LOADED:
+            return None
+        return entry.runtime_data
 
     def _eligible_categories(self) -> list:
         runtime = self._runtime
@@ -217,6 +221,9 @@ class YnabOptionsFlow(OptionsFlow):
     async def async_step_general(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        runtime = self._runtime
+        if runtime is None or runtime.coordinator.data is None:
+            return self.async_abort(reason="not_loaded")
         if user_input is not None:
             return self._finish(
                 **{
@@ -228,16 +235,11 @@ class YnabOptionsFlow(OptionsFlow):
             )
 
         options = self.config_entry.options
-        runtime = self._runtime
-        accounts = (
-            [
-                (a.id, a.name)
-                for a in runtime.coordinator.data.accounts.values()
-                if not a.closed
-            ]
-            if runtime and runtime.coordinator.data
-            else []
-        )
+        accounts = [
+            (a.id, a.name)
+            for a in runtime.coordinator.data.accounts.values()
+            if not a.closed
+        ]
         categories = [(c.id, f"{c.group_name}: {c.name}") for c in self._eligible_categories()]
         all_accounts = [value for value, _ in accounts]
         all_categories = [value for value, _ in categories]
@@ -314,6 +316,8 @@ class YnabOptionsFlow(OptionsFlow):
                     mapping["groups"][group_id] = stage
             mapping["overflow_category_id"] = user_input.get(CONF_OVERFLOW) or None
             store.schedule_save()
+            # Recompute low state and sensors from the new settings.
+            await runtime.coordinator.async_request_refresh()
             return self._finish()
 
         stage_selector = SelectSelector(
@@ -363,6 +367,8 @@ class YnabOptionsFlow(OptionsFlow):
             else:
                 store.low_share_overrides[category_id] = float(share)
             store.schedule_save()
+            # Recompute low state and sensors from the new settings.
+            await runtime.coordinator.async_request_refresh()
             return self._finish()
 
         schema = probatio.Schema(

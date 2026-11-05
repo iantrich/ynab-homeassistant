@@ -21,6 +21,7 @@ from custom_components.ynab.const import (
 )
 from custom_components.ynab.coordinator import YnabCoordinator
 from custom_components.ynab.store import YnabStore
+from tests.conftest import _register
 
 PLAN = "p"
 BASE = f"{API_BASE}/{PLAN_SEGMENT}/{PLAN}"
@@ -29,21 +30,6 @@ BASE = f"{API_BASE}/{PLAN_SEGMENT}/{PLAN}"
 @pytest.fixture(autouse=True)
 def frozen(freezer):
     freezer.move_to("2026-11-05T12:00:00+00:00")
-
-
-def _register(mock, fixture, *, accounts=None, categories=None, txs=None, month=None,
-              k=(1001, 1002, 1003)):
-    """Register all four endpoints (any query string matches)."""
-    mock.clear_requests()
-    a = accounts or fixture("accounts")
-    c = categories or fixture("categories")
-    t = txs or fixture("transactions")
-    m = month or fixture("month")
-    a["data"]["server_knowledge"], c["data"]["server_knowledge"], t["data"]["server_knowledge"] = k
-    mock.get(f"{BASE}/accounts", json=a)
-    mock.get(f"{BASE}/categories", json=c)
-    mock.get(f"{BASE}/transactions", json=t)
-    mock.get(f"{BASE}/months/current", json=m)
 
 
 async def _poll(coord):

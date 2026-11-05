@@ -6,7 +6,7 @@ from homeassistant.config_entries import ConfigEntryState
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.ynab.diagnostics import async_get_config_entry_diagnostics
-from tests.test_coordinator import _register
+from tests.conftest import _register
 
 TOKEN = "super-secret-token-xyz"
 
