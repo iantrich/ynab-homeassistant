@@ -7,7 +7,7 @@ Repo: `~/Documents/GitHub/ynab-homeassistant` · HA domain `ynab` (Claude's call
 ## Intent
 
 A general-purpose YNAB integration for Home Assistant that does more than show
-balances: it can **fix transactions, apply rules, and propose how to assign
+balances: it can **fix transactions, drive automations, and propose how to assign
 money**, and it exposes all of that to automations, to dashboards, and to
 Claude through HA's MCP Server.
 
@@ -27,7 +27,7 @@ Ian's own reasons, which drove the design:
 Ian uses HA for automations and notifications. Other users will want YNAB data
 on dashboards as a "one-stop shop", so it ships as a shareable integration and
 nothing Ian-specific is built in. His Apple Savings, mortgage and cashback
-setups are **configuration (rules)**, not code.
+setups are **automations built from shipped blueprints**, not code.
 
 ### Why not contribute to `DeLuca21/ynab-ha`
 
@@ -72,7 +72,7 @@ ideas is fine.
 ## Anti-goals (a failure even if it "works")
 
 - Moving money or changing a transaction the user didn't approve, except
-  through a rule the user explicitly set to **auto**.
+  through an automation the user built to apply changes directly.
 - Touching a transaction that is already approved in YNAB. Manual edits win.
 - Running over YNAB's 200 requests/hour limit.
 - The access token appearing anywhere but HA's config entry store: not in
@@ -130,7 +130,7 @@ ideas is fine.
   - **Auto-categorize small deposits:** account, raw payee, amount cap,
     category, approve.
   - **Notify when a bucket goes low:** categories, notify target.
-- Rule suggestions: when a transaction in an account is categorized by hand
+- Recurring detection: when a transaction in an account is categorized by hand
   and the same amount recurs around the same day each month, the integration
   fires `ynab_recurring_detected` and lists it in the summary, pointing at the
   recurring blueprint. Ian's ha-mcp setup lets Claude create the automation in
@@ -162,7 +162,7 @@ ideas is fine.
 
 ### Where review happens
 
-- The integration does the deterministic work itself (rules, proposals,
+- The integration does the deterministic work itself (events, automations, proposals,
   low-bucket state). Ian's scheduled morning brief can later report on it
   through the MCP tools. Building the integration and MCP tools comes first.
 
