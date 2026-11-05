@@ -167,8 +167,8 @@ def async_register_services(hass: HomeAssistant) -> None:
         (SERVICE_APPROVE_PROPOSALS, approve_proposals, PROPOSAL_IDS_SCHEMA, SupportsResponse.OPTIONAL),
         (SERVICE_REJECT_PROPOSALS, reject_proposals, PROPOSAL_IDS_SCHEMA, SupportsResponse.OPTIONAL),
         (SERVICE_LIST_PROPOSALS, list_proposals, LIST_PROPOSALS_SCHEMA, SupportsResponse.ONLY),
-        (SERVICE_PROPOSE_ALLOCATION, propose_allocation, PROPOSE_ALLOCATION_SCHEMA, SupportsResponse.ONLY),
-        (SERVICE_APPLY_ALLOCATION, apply_allocation, APPLY_ALLOCATION_SCHEMA, SupportsResponse.ONLY),
+        (SERVICE_PROPOSE_ALLOCATION, propose_allocation, PROPOSE_ALLOCATION_SCHEMA, SupportsResponse.OPTIONAL),
+        (SERVICE_APPLY_ALLOCATION, apply_allocation, APPLY_ALLOCATION_SCHEMA, SupportsResponse.OPTIONAL),
     ):
         hass.services.async_register(
             DOMAIN, name, handler, schema=schema, supports_response=response

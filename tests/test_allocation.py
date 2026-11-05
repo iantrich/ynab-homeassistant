@@ -136,11 +136,26 @@ def test_zero_available_no_moves():
         assert result.total == 0
 
 
-def test_excluded_groups_never_funded():
-    # The caller passes only eligible categories; ones not passed get nothing.
-    result = run(100, [cat("c-rent", under=10), cat("c-over", "g-fun", order=1)])
-    assert "c-ccpay" not in {m.category_id for m in result.moves}
-    assert result.leftover_to_overflow == D("90.00")
+def test_unknown_stage_value_is_unstaged():
+    mapping = {"groups": {"g-bills": "bogus"}, "categories": {}}
+    result = run(100, [cat("c-rent", under=10), cat("c-over", "g-fun", order=1)], mapping=mapping)
+    assert result.unstaged == ["C-Rent"]
+    assert [m.category_id for m in result.moves] == ["c-over"]
+
+
+def test_overflow_not_among_eligible_is_reported_and_money_stays():
+    result = run(100, [cat("c-rent", under=10)], overflow="c-gone")
+    assert result.overflow_unavailable is True
+    assert result.total == D("10.00")
+    assert run(100, [cat("c-rent", under=10)], overflow=None).overflow_unavailable is False
+
+
+def test_balance_goal_dedupe_ignores_overspending_cover():
+    this = [cat("c-save", "g-savings", balance=-50, under=100, goal="TB")]
+    nxt = [cat("c-save", "g-savings", under=500, goal="TB")]
+    result = run(1000, this, nxt, overflow=None)
+    # 50 cover + 100 target this month; next month only the 100 target is subtracted.
+    assert amounts(result)[-1] == (NEXT, "c-save", D("400.00"), "target")
 
 
 def test_amounts_rounded_to_cents_and_never_exceed_available():

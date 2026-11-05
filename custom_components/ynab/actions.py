@@ -30,6 +30,14 @@ CREDIT_CARD_GROUP_NAME = "Credit Card Payments"
 _MONTH_RE = re.compile(r"^\d{4}-\d{2}-01$")
 
 
+class AllocationRefused(ServiceValidationError):
+    """An allocation cannot be applied; ``code`` is a stable machine-readable reason."""
+
+    def __init__(self, code: str, detail: str) -> None:
+        super().__init__(f"{code}: {detail}")
+        self.code = code
+
+
 class TxUpdate(TypedDict):
     """One requested transaction change."""
 
@@ -200,6 +208,23 @@ class YnabActions:
         await self._after_write()
         return ids
 
+    async def _read_month(self, month: str) -> dict[str, Any]:
+        try:
+            return await self.client.get_month(self.coordinator.plan_id, month)
+        except YnabError as err:
+            raise HomeAssistantError(f"Could not read month {month}: {err}") from err
+
+    @staticmethod
+    def _budgeted_by_id(raw_month: dict[str, Any]) -> dict[str, Decimal]:
+        return {
+            c["id"]: to_decimal(c.get("budgeted") or 0)
+            for c in raw_month.get("categories", [])
+        }
+
+    async def _read_budgeted(self, month: str) -> dict[str, Decimal]:
+        """Fresh per-category assigned amounts for one explicit month."""
+        return self._budgeted_by_id(await self._read_month(month))
+
     async def assign_money(
         self,
         category: str,
@@ -208,8 +233,15 @@ class YnabActions:
         month: str = "current",
         mode: Literal["set", "add"] = "set",
         source: str,
+        fresh_budgeted: dict[str, Decimal] | None = None,
     ) -> Decimal:
-        """Set or add to a category's assigned amount; returns the new amount."""
+        """Set or add to a category's assigned amount; returns the new amount.
+
+        "add" always builds on a fresh read of that month (never the polled
+        cache), since YNAB is written with an absolute value. Callers that
+        already read the month may pass ``fresh_budgeted`` (category id ->
+        budgeted) to avoid a second request.
+        """
         if mode not in ("set", "add"):
             raise ServiceValidationError("mode must be 'set' or 'add'")
         if not isinstance(amount, Decimal) or not amount.is_finite():
@@ -224,21 +256,15 @@ class YnabActions:
 
         cat = self.resolve_category(category)
         data = self.coordinator.data
-        if month == "current" or month == data.month:
-            api_month = data.month  # explicit, so a rollover can't mismatch
-            existing = cat.budgeted
+        api_month = data.month if month == "current" else month  # always explicit
+        if mode == "set" and api_month == data.month:
+            existing = cat.budgeted  # only used for the log entry
         else:
-            api_month = month
-            try:
-                raw_month = await self.client.get_month(self.coordinator.plan_id, month)
-            except YnabError as err:
-                raise HomeAssistantError(f"Could not read month {month}: {err}") from err
-            raw = next(
-                (c for c in raw_month.get("categories", []) if c["id"] == cat.id), None
-            )
-            if raw is None:
-                raise ServiceValidationError(f"{cat.name} not found in {month}")
-            existing = to_decimal(raw.get("budgeted") or 0)
+            if fresh_budgeted is None:
+                fresh_budgeted = await self._read_budgeted(api_month)
+            if cat.id not in fresh_budgeted:
+                raise ServiceValidationError(f"{cat.name} not found in {api_month}")
+            existing = fresh_budgeted[cat.id]
 
         new_amount = existing + amount if mode == "add" else amount
         if new_amount < 0:
@@ -330,6 +356,8 @@ class YnabActions:
             "leftover_to_overflow": str(result.leftover_to_overflow),
             "unfunded": [[name, str(amount)] for name, amount in result.unfunded],
             "unstaged": result.unstaged,
+            "overflow_unavailable": result.overflow_unavailable,
+            "this_month_key": this_key,
             "rta_at_creation": str(available),
             "source": source,
             "created_at": dt_util.utcnow().isoformat(),
@@ -369,19 +397,28 @@ class YnabActions:
                 f"Allocation {proposal_id} is {proposal['status']}, not pending"
             )
         total = Decimal(proposal["total"])
-        try:
-            raw_month = await self.client.get_month(self.coordinator.plan_id, "current")
-        except YnabError as err:
-            raise HomeAssistantError(f"Could not read the current month: {err}") from err
-        available = to_decimal(raw_month.get("to_be_budgeted") or 0)
+        current_key = self.coordinator.data.month
+        this_key = proposal.get("this_month_key", current_key)
+        if this_key < current_key or any(m["month"] < current_key for m in proposal["moves"]):
+            raise AllocationRefused(
+                "month_changed", "the month rolled over since this was proposed"
+            )
+        # One fresh read per month covers the RTA check and every move's base.
+        raw_months: dict[str, dict[str, Any]] = {}
+        for month in dict.fromkeys([this_key, *(m["month"] for m in proposal["moves"])]):
+            raw_months[month] = await self._read_month(month)
+        fresh = {month: self._budgeted_by_id(raw) for month, raw in raw_months.items()}
+        raw_current = raw_months[this_key]
+        available = to_decimal(raw_current.get("to_be_budgeted") or 0)
         if available < total:
-            raise ServiceValidationError(
-                f"ready_to_assign_dropped: {available} is available but the "
-                f"allocation needs {total}; propose a new one"
+            raise AllocationRefused(
+                "ready_to_assign_dropped",
+                f"{available} is available but the allocation needs {total}; "
+                "propose a new one",
             )
 
-        # One write per (month, category): assign_money reads the cached
-        # amount for the current month, so repeated adds would overwrite.
+        # One write per (month, category): repeated adds would otherwise
+        # each start from the same base and overwrite one another.
         groups: dict[tuple[str, str], list[dict]] = {}
         for move in proposal["moves"]:
             groups.setdefault((move["month"], move["category_id"]), []).append(move)
@@ -391,7 +428,8 @@ class YnabActions:
             amount = sum((Decimal(m["amount"]) for m in moves), Decimal(0))
             try:
                 await self.assign_money(
-                    category_id, amount, month=month, mode="add", source=source
+                    category_id, amount, month=month, mode="add", source=source,
+                    fresh_budgeted=fresh[month],
                 )
             except HomeAssistantError as err:
                 if not applied:
@@ -521,6 +559,7 @@ class YnabActions:
         ready: list[tuple[dict, TxUpdate]] = []
         data = self.coordinator.data
         allocation_ids: list[str] = []
+        details: dict[str, str] = {}
         for pid in dict.fromkeys(ids):
             if pid in self.store.allocations:
                 allocation_ids.append(pid)
@@ -577,13 +616,25 @@ class YnabActions:
                 continue
             try:
                 await self.apply_allocation(pid, source=source)
+            except AllocationRefused as err:
+                skipped[pid] = err.code  # stays pending
+                details[pid] = str(err)
+                continue
             except ServiceValidationError as err:
-                skipped[pid] = str(err)  # stays pending
+                skipped[pid] = str(err)
+                continue
+            except HomeAssistantError as err:
+                partial = self.store.allocations[pid]["status"] == "partial"
+                skipped[pid] = "partial" if partial else "failed"
+                details[pid] = str(err)
                 continue
             applied.append(pid)
         if ready or skipped:
             self._proposals_changed()
-        return {"applied": applied, "skipped": skipped}
+        result: dict[str, Any] = {"applied": applied, "skipped": skipped}
+        if details:
+            result["details"] = details
+        return result
 
     async def reject_proposals(self, ids: list[str], *, source: str) -> dict[str, Any]:
         """Dismiss pending proposals without changing YNAB."""

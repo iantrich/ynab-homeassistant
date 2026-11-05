@@ -156,7 +156,7 @@ list_proposals:
             - superseded
             - all
 propose_allocation:
-  description: Propose how to assign Ready to Assign across categories in priority order (response only). Nothing changes in YNAB until the proposal is approved or applied.
+  description: Propose how to assign Ready to Assign across categories in priority order. Nothing changes in YNAB until the proposal is approved or applied.
   fields:
     config_entry_id:
       required: true
@@ -164,7 +164,7 @@ propose_allocation:
         config_entry:
           integration: ynab
 apply_allocation:
-  description: Apply a pending allocation proposal to YNAB (response only).
+  description: Apply a pending allocation proposal to YNAB.
   fields:
     config_entry_id:
       required: true

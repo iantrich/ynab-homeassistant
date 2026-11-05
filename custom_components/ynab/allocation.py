@@ -37,12 +37,14 @@ class AllocationResult:
     leftover_to_overflow: Decimal = Decimal(0)
     unfunded: list[tuple[str, Decimal]] = field(default_factory=list)
     unstaged: list[str] = field(default_factory=list)
+    overflow_unavailable: bool = False
 
 
 def _stage(cat: Category, mapping: dict[str, Any]) -> str | None:
-    return (mapping.get("categories") or {}).get(cat.id) or (
+    stage = (mapping.get("categories") or {}).get(cat.id) or (
         mapping.get("groups") or {}
     ).get(cat.group_id)
+    return stage if stage in STAGES else None  # an unknown stage counts as unstaged
 
 
 def _cents(amount: Decimal) -> Decimal:
@@ -66,7 +68,7 @@ def compute_allocation(
     """
     result = AllocationResult()
     remaining = Decimal(available)
-    assigned_this_month: dict[str, Decimal] = {}
+    targeted_this_month: dict[str, Decimal] = {}
 
     def underfunded(cat: Category) -> Decimal:
         return cat.goal_under_funded if cat.goal_under_funded and cat.goal_under_funded > 0 else Decimal(0)
@@ -85,8 +87,8 @@ def compute_allocation(
             return Decimal(0)
         result.moves.append(Move(month, cat.id, cat.name, amount, stage, reason))
         remaining -= amount
-        if month == this_month_key:
-            assigned_this_month[cat.id] = assigned_this_month.get(cat.id, Decimal(0)) + amount
+        if month == this_month_key and reason == "target":
+            targeted_this_month[cat.id] = targeted_this_month.get(cat.id, Decimal(0)) + amount
         return amount
 
     if remaining > 0:
@@ -104,7 +106,7 @@ def compute_allocation(
                     wanted = underfunded(cat)
                     if month_key == next_month_key and cat.goal_type in BALANCE_GOAL_TYPES:
                         # A balance goal counts what this run already put in.
-                        wanted -= assigned_this_month.get(cat.id, Decimal(0))
+                        wanted -= targeted_this_month.get(cat.id, Decimal(0))
                     if wanted <= 0:
                         continue
                     given = add(month_key, cat, wanted, stage, "target")
@@ -114,6 +116,7 @@ def compute_allocation(
         overflow = next(
             (c for c in this_month if c.id == overflow_category_id), None
         ) if overflow_category_id else None
+        result.overflow_unavailable = bool(overflow_category_id) and overflow is None
         if overflow is not None and remaining > 0:
             result.leftover_to_overflow = add(
                 this_month_key, overflow, remaining, OVERFLOW_STAGE, "overflow"
