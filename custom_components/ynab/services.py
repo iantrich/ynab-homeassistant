@@ -22,6 +22,7 @@ SERVICE_PROPOSE_TRANSACTION_UPDATE = "propose_transaction_update"
 SERVICE_APPROVE_PROPOSALS = "approve_proposals"
 SERVICE_REJECT_PROPOSALS = "reject_proposals"
 SERVICE_LIST_PROPOSALS = "list_proposals"
+SERVICE_LIST_RECURRING = "list_recurring"
 SERVICE_PROPOSE_ALLOCATION = "propose_allocation"
 SERVICE_APPLY_ALLOCATION = "apply_allocation"
 
@@ -78,6 +79,7 @@ LIST_PROPOSALS_SCHEMA = vol.Schema(
         ),
     }
 )
+LIST_RECURRING_SCHEMA = vol.Schema(_ENTRY)
 PROPOSE_ALLOCATION_SCHEMA = vol.Schema(_ENTRY)
 APPLY_ALLOCATION_SCHEMA = vol.Schema({**_ENTRY, vol.Required("proposal_id"): cv.string})
 
@@ -150,6 +152,9 @@ def async_register_services(hass: HomeAssistant) -> None:
     async def list_proposals(call: ServiceCall) -> dict[str, Any]:
         return {"proposals": _actions(hass, call).list_proposals(call.data["status"])}
 
+    async def list_recurring(call: ServiceCall) -> dict[str, Any]:
+        return {"recurring": _actions(hass, call).list_recurring()}
+
     async def propose_allocation(call: ServiceCall) -> dict[str, Any]:
         return await _actions(hass, call).propose_allocation(source=source_from_call(call))
 
@@ -167,6 +172,7 @@ def async_register_services(hass: HomeAssistant) -> None:
         (SERVICE_APPROVE_PROPOSALS, approve_proposals, PROPOSAL_IDS_SCHEMA, SupportsResponse.OPTIONAL),
         (SERVICE_REJECT_PROPOSALS, reject_proposals, PROPOSAL_IDS_SCHEMA, SupportsResponse.OPTIONAL),
         (SERVICE_LIST_PROPOSALS, list_proposals, LIST_PROPOSALS_SCHEMA, SupportsResponse.ONLY),
+        (SERVICE_LIST_RECURRING, list_recurring, LIST_RECURRING_SCHEMA, SupportsResponse.ONLY),
         (SERVICE_PROPOSE_ALLOCATION, propose_allocation, PROPOSE_ALLOCATION_SCHEMA, SupportsResponse.OPTIONAL),
         (SERVICE_APPLY_ALLOCATION, apply_allocation, APPLY_ALLOCATION_SCHEMA, SupportsResponse.OPTIONAL),
     ):

@@ -19,6 +19,7 @@ from .client import YnabClient, YnabError
 from .const import EVENT_PROPOSAL_CREATED, EVENT_TRANSACTION_UPDATED
 from .coordinator import YnabCoordinator, YnabData
 from .models import Category, Transaction, to_decimal, to_milliunits
+from .recurring import detect_recurring
 from .store import YnabStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -551,6 +552,14 @@ class YnabActions:
             ),
             key=lambda p: p["created_at"],
         )
+
+    def list_recurring(self) -> list[dict]:
+        """Recurring transactions detected in the current transaction window."""
+        data = self.coordinator.data
+        if data is None:
+            return []
+        today = dt_util.now().date()
+        return [r.as_event_data() for r in detect_recurring(data.transactions.values(), today)]
 
     async def approve_proposals(self, ids: list[str], *, source: str) -> dict[str, Any]:
         """Apply pending transaction proposals in one bulk update."""

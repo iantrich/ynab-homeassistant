@@ -134,6 +134,14 @@ reject_proposals:
       example: '["p-1a2b3c"]'
       selector:
         object:
+list_recurring:
+  description: Return transactions that recur monthly (response only).
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: ynab
 list_proposals:
   description: Return proposals (response only).
   fields:
