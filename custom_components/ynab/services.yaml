@@ -1,0 +1,84 @@
+update_transaction:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: ynab
+    transaction_id:
+      required: true
+      example: "7c1a2b3c-0000-0000-0000-000000000000"
+      selector:
+        text:
+    category:
+      description: Category id or exact name.
+      example: Groceries
+      selector:
+        text:
+    payee_name:
+      example: Costco
+      selector:
+        text:
+    memo:
+      selector:
+        text:
+    approve:
+      default: false
+      selector:
+        boolean:
+    force:
+      description: Allow changing an already-approved transaction.
+      default: false
+      selector:
+        boolean:
+update_transactions:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: ynab
+    updates:
+      required: true
+      description: List of updates; each has transaction_id and optional category, payee_name, memo, approve, force.
+      example: '[{"transaction_id": "abc", "category": "Groceries", "approve": true}]'
+      selector:
+        object:
+assign_money:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: ynab
+    category:
+      required: true
+      description: Category id or exact name.
+      selector:
+        text:
+    amount:
+      required: true
+      description: Amount in the plan currency.
+      selector:
+        number:
+          mode: box
+          step: any
+    month:
+      default: current
+      description: '"current" or a month as YYYY-MM-01.'
+      selector:
+        text:
+    mode:
+      default: set
+      selector:
+        select:
+          options:
+            - set
+            - add
+refresh:
+  fields:
+    config_entry_id:
+      required: true
+      selector:
+        config_entry:
+          integration: ynab

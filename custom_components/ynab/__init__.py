@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.typing import ConfigType
 
+from .actions import YnabActions
 from .client import YnabClient
+from .const import DOMAIN
 from .coordinator import YnabCoordinator
+from .services import async_register_services
 from .store import YnabStore
 
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR]
@@ -24,10 +28,18 @@ class YnabRuntime:
     client: YnabClient
     store: YnabStore
     coordinator: YnabCoordinator
-    actions: Any | None = None  # YnabActions, added in Task 7
+    actions: YnabActions | None = None
 
 
 type YnabConfigEntry = ConfigEntry[YnabRuntime]
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register services once for the whole integration."""
+    async_register_services(hass)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: YnabConfigEntry) -> bool:
@@ -47,7 +59,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: YnabConfigEntry) -> bool
     await coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = YnabRuntime(
-        client=client, store=store, coordinator=coordinator, actions=None
+        client=client,
+        store=store,
+        coordinator=coordinator,
+        actions=YnabActions(hass, entry, client, coordinator, store),
     )
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     # Reload on options changes so scan_minutes and entity selections apply.
