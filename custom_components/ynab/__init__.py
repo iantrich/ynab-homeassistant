@@ -16,6 +16,7 @@ from .actions import YnabActions
 from .client import YnabClient
 from .const import DOMAIN, EVENT_RECURRING_DETECTED
 from .coordinator import YnabCoordinator, YnabData
+from .llm_api import async_register as async_register_llm_api
 from .recurring import detect_recurring
 from .services import async_register_services
 from .store import YnabStore
@@ -86,6 +87,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: YnabConfigEntry) -> bool
 
     entry.async_on_unload(coordinator.add_sync_listener(_report_recurring))
     _report_recurring(None, coordinator.data)
+    entry.async_on_unload(async_register_llm_api(hass, entry))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     # Reload on options changes so scan_minutes and entity selections apply.
     loaded_options = dict(entry.options)
