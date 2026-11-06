@@ -85,7 +85,7 @@ Every payload includes `entry_id`.
 
 | Event | Fired when |
 |---|---|
-| `ynab_transaction_imported` | a new transaction appears in YNAB |
+| `ynab_transaction_imported` | a new transaction arrives from a bank import (hand-entered and scheduled transactions do not fire it) |
 | `ynab_transaction_updated` | a transaction changes |
 | `ynab_proposal_created` | a proposal is recorded |
 | `ynab_recurring_detected` | a transaction is seen recurring monthly |

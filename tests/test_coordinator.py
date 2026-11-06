@@ -260,3 +260,23 @@ async def test_network_error_keeps_knowledge(hass, aioclient_mock, fixture):
     with pytest.raises(UpdateFailed):
         await coord._async_update_data()
     assert coord.store.knowledge == before
+
+
+async def test_event_only_for_imported_transactions(hass, aioclient_mock, fixture):
+    _register(aioclient_mock, fixture)
+    events = async_capture_events(hass, EVENT_TRANSACTION_IMPORTED)
+    coord, _ = await _make(hass)
+    await _poll(coord)
+
+    base = copy.deepcopy(fixture("transactions")["data"]["transactions"][0])
+    delta = {"data": {"transactions": [
+        {**base, "id": "t-manual", "import_id": None},
+        {**base, "id": "t-bank", "import_id": "YNAB:-1:2026-11-03:1"},
+    ]}}
+    _register(aioclient_mock, fixture, txs=delta, k=(1101, 1102, 1103))
+    await _poll(coord)
+    await hass.async_block_till_done()
+
+    assert [e.data["transaction_id"] for e in events] == ["t-bank"]
+    assert "t-manual" in coord.data.transactions
+    assert "t-manual" in coord.store.seen_transaction_ids

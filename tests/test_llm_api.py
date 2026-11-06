@@ -125,6 +125,7 @@ async def test_reads_are_json_safe(hass, aioclient_mock, fixture):
         json.dumps((await _call(t[name], **args)).data)
     txs = (await _call(t["list_transactions"], approved=False)).data["transactions"]
     assert txs and all(not x["approved"] for x in txs)
+    assert all("import_payee_name" in x for x in txs)
 
 
 async def test_limit_is_bounded(hass, aioclient_mock, fixture):

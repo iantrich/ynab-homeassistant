@@ -138,6 +138,7 @@ class Transaction:
     deleted: bool
     transfer_account_id: str | None
     is_split: bool
+    import_id: str | None = None
 
     @classmethod
     def from_api(cls, d: dict[str, Any]) -> Transaction:
@@ -158,4 +159,5 @@ class Transaction:
             deleted=bool(d.get("deleted", False)),
             transfer_account_id=d.get("transfer_account_id"),
             is_split=bool(d.get("subtransactions")),
+            import_id=d.get("import_id"),
         )

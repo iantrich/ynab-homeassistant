@@ -111,6 +111,7 @@ def _tx(tx: Transaction) -> dict[str, Any]:
         "amount": float(tx.amount),
         "account": tx.account_name,
         "payee": tx.payee_name,
+        "import_payee_name": tx.import_payee_name,
         "category": tx.category_name,
         "memo": tx.memo,
         "approved": tx.approved,

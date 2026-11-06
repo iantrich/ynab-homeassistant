@@ -203,7 +203,9 @@ class YnabCoordinator(DataUpdateCoordinator[YnabData]):
                 key=lambda t: (t.date, t.id),
             )
             for tx in fresh:
-                self._fire_imported(tx)
+                # Hand-entered and scheduled transactions have no import_id.
+                if tx.import_id:
+                    self._fire_imported(tx)
         store.seen_transaction_ids |= set(new.transactions)
         store.prune_seen(new.transactions)
         store.initialized = True
