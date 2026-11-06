@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 import logging
 from decimal import Decimal
@@ -38,6 +39,7 @@ from .store import YnabStore
 _LOGGER = logging.getLogger(__name__)
 
 WINDOW_DAYS = 120
+TX_REFRESH_MIN_AGE = timedelta(seconds=30)
 RTA_CATEGORY_NAME = "Inflow: Ready to Assign"
 
 SyncListener = Callable[["YnabData | None", "YnabData"], None]
@@ -83,6 +85,8 @@ class YnabCoordinator(DataUpdateCoordinator[YnabData]):
         # Local state is not persisted, so the first refresh of every
         # instance is a full fetch regardless of stored knowledge.
         self._synced_once = False
+        self._sync_lock = asyncio.Lock()
+        self._last_tx_fetch = None
 
     def add_sync_listener(self, cb: SyncListener) -> Callable[[], None]:
         """Register a callback run after each sync; returns an unsubscribe."""
@@ -113,6 +117,35 @@ class YnabCoordinator(DataUpdateCoordinator[YnabData]):
     # -- sync ---------------------------------------------------------------------
 
     async def _async_update_data(self) -> YnabData:
+        async with self._sync_lock:
+            return await self._sync()
+
+    async def async_refresh_transactions(self) -> None:
+        """Pull only the transactions delta (one request) and merge it.
+
+        Used before writes so a transaction the user approved or re-categorized
+        in the YNAB app since the last poll is not overwritten. Skipped when
+        transactions were fetched less than 30 seconds ago. Raises YnabError.
+        """
+        async with self._sync_lock:
+            if self.data is None or not self._synced_once:
+                return
+            last = self._last_tx_fetch
+            if last is not None and dt_util.utcnow() - last < TX_REFRESH_MIN_AGE:
+                return
+            raw_txs, k_transactions = await self.client.get_transactions(
+                self.plan_id, self.store.knowledge.get("transactions"), None
+            )
+            old = self.data
+            new = replace(old, transactions=self._merge_transactions(old.transactions, raw_txs))
+            self.data = new
+            self.store.knowledge["transactions"] = k_transactions
+            self._last_tx_fetch = dt_util.utcnow()
+            self.store.schedule_save()
+            self._after_sync(old, new)
+            self.async_update_listeners()
+
+    async def _sync(self) -> YnabData:
         knowledge = self.store.knowledge
         full = not self._synced_once
         since = {} if full else knowledge
@@ -153,6 +186,7 @@ class YnabCoordinator(DataUpdateCoordinator[YnabData]):
         )
         self.store.schedule_save()
         self._synced_once = True
+        self._last_tx_fetch = dt_util.utcnow()
         self._after_sync(old, new)
         return new
 
@@ -181,15 +215,7 @@ class YnabCoordinator(DataUpdateCoordinator[YnabData]):
             else:
                 categories[cat.id] = cat
 
-        transactions = dict(old.transactions) if old else {}
-        for raw in raw_txs:
-            tx = Transaction.from_api(raw)
-            if tx.deleted:
-                transactions.pop(tx.id, None)
-            else:
-                transactions[tx.id] = tx
-        cutoff = dt_util.now().date() - timedelta(days=WINDOW_DAYS)
-        transactions = {i: t for i, t in transactions.items() if t.date >= cutoff}
+        transactions = self._merge_transactions(old.transactions if old else {}, raw_txs)
 
         return YnabData(
             accounts=accounts,
@@ -199,6 +225,21 @@ class YnabCoordinator(DataUpdateCoordinator[YnabData]):
             month=month["month"],
             currency=self.currency,
         )
+
+    @staticmethod
+    def _merge_transactions(
+        current: dict[str, Transaction], raw_txs: list[dict]
+    ) -> dict[str, Transaction]:
+        """Apply a transactions delta: upsert, drop deleted, prune the window."""
+        transactions = dict(current)
+        for raw in raw_txs:
+            tx = Transaction.from_api(raw)
+            if tx.deleted:
+                transactions.pop(tx.id, None)
+            else:
+                transactions[tx.id] = tx
+        cutoff = dt_util.now().date() - timedelta(days=WINDOW_DAYS)
+        return {i: t for i, t in transactions.items() if t.date >= cutoff}
 
     def _after_sync(self, old: YnabData | None, new: YnabData) -> None:
         store = self.store

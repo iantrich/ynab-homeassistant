@@ -538,3 +538,37 @@ async def test_unavailable_overflow_is_reported(hass, aioclient_mock, fixture):
     proposal = await entry.runtime_data.actions.propose_allocation(source="llm")
     assert proposal["overflow_unavailable"] is True
     assert proposal["total"] == "100.00"
+
+
+async def test_update_refuses_transaction_approved_in_app(hass, aioclient_mock, fixture, freezer):
+    entry = await _setup(hass, aioclient_mock, fixture)
+    freezer.tick(31)
+    txs = copy.deepcopy(fixture("transactions"))
+    txs["data"]["server_knowledge"] = 1200
+    txs["data"]["transactions"] = [
+        {**t, "approved": True} for t in txs["data"]["transactions"] if t["id"] == "t-withdrawal"
+    ]
+    aioclient_mock.clear_requests()  # first registered match wins
+    aioclient_mock.get(f"{BASE}/transactions", json=txs)
+    aioclient_mock.patch(f"{BASE}/transactions", json={"data": {"transactions": []}})
+    with pytest.raises(ServiceValidationError, match="already approved"):
+        await entry.runtime_data.actions.update_transactions(
+            [{"transaction_id": "t-withdrawal", "category": "Groceries"}], source="llm"
+        )
+    assert _writes(aioclient_mock) == []
+    assert entry.runtime_data.coordinator.data.transactions["t-withdrawal"].approved
+
+
+async def test_update_wraps_refresh_failure(hass, aioclient_mock, fixture, freezer):
+    from homeassistant.exceptions import HomeAssistantError
+
+    entry = await _setup(hass, aioclient_mock, fixture)
+    freezer.tick(31)
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(f"{BASE}/transactions", status=429, json={"error": {"detail": "slow"}})
+    aioclient_mock.patch(f"{BASE}/transactions", json={"data": {"transactions": []}})
+    with pytest.raises(HomeAssistantError, match="refresh"):
+        await entry.runtime_data.actions.update_transactions(
+            [{"transaction_id": "t-withdrawal", "category": "Groceries"}], source="llm"
+        )
+    assert _writes(aioclient_mock) == []

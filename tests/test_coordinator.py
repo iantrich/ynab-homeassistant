@@ -329,3 +329,34 @@ async def test_month_rollover_refetches_categories(hass, aioclient_mock, fixture
     await _poll(coord)
     assert seen[-1] == {"last_knowledge_of_server": "1102"}
     assert len(seen) == 2
+
+
+async def test_refresh_transactions_merges_delta_and_fires_events(
+    hass, aioclient_mock, fixture, freezer
+):
+    _register(aioclient_mock, fixture)
+    events = async_capture_events(hass, EVENT_TRANSACTION_IMPORTED)
+    coord, _ = await _make(hass)
+    await _poll(coord)
+    base = copy.deepcopy(fixture("transactions")["data"]["transactions"][0])
+    gone = copy.deepcopy(fixture("transactions")["data"]["transactions"][2])
+    gone["deleted"] = True
+    delta = {"data": {"transactions": [{**base, "id": "t-new"}, gone],
+                      "server_knowledge": 1500}}
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(f"{BASE}/transactions", json=delta)
+    freezer.tick(31)
+    notified = []
+    coord.async_add_listener(lambda: notified.append(1))
+
+    await coord.async_refresh_transactions()
+    await hass.async_block_till_done()
+
+    assert aioclient_mock.call_count == 1
+    assert "t-new" in coord.data.transactions
+    assert "t-mortgage" not in coord.data.transactions
+    assert coord.store.knowledge == {
+        "accounts": 1001, "categories": 1002, "transactions": 1500
+    }
+    assert [e.data["transaction_id"] for e in events] == ["t-new"]
+    assert notified

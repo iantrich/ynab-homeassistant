@@ -164,6 +164,15 @@ class YnabActions:
 
     # -- writes -------------------------------------------------------------------
 
+    async def _refresh_transactions(self) -> None:
+        """Bring local transactions up to date before trusting them for a write."""
+        try:
+            await self.coordinator.async_refresh_transactions()
+        except YnabError as err:
+            raise HomeAssistantError(
+                f"Could not refresh transactions from YNAB before updating: {err}"
+            ) from err
+
     async def update_transactions(
         self, updates: list[TxUpdate], *, source: str
     ) -> list[str]:
@@ -172,6 +181,7 @@ class YnabActions:
             raise ServiceValidationError("No updates given")
         if len(updates) > MAX_BATCH:
             raise ServiceValidationError(f"At most {MAX_BATCH} updates per call")
+        await self._refresh_transactions()
         # All-or-nothing: nothing is sent unless every update is valid.
         validated = [self._validate_update(u) for u in updates]
         ids = [tx.id for tx, _ in validated]
@@ -563,6 +573,7 @@ class YnabActions:
 
     async def approve_proposals(self, ids: list[str], *, source: str) -> dict[str, Any]:
         """Apply pending transaction proposals in one bulk update."""
+        await self._refresh_transactions()
         proposals = self.store.proposals
         skipped: dict[str, str] = {}
         ready: list[tuple[dict, TxUpdate]] = []
