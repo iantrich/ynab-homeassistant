@@ -152,6 +152,7 @@ async def test_rate_limit_keeps_knowledge(hass, aioclient_mock, fixture):
     before = dict(coord.store.knowledge)
 
     aioclient_mock.clear_requests()
+    aioclient_mock.get(f"{BASE}/months/current", json=fixture("month"))
     aioclient_mock.get(f"{BASE}/accounts", json=fixture("accounts"))
     aioclient_mock.get(f"{BASE}/categories", status=429, json={"error": {"detail": "slow"}})
     with pytest.raises(UpdateFailed, match="429"):
@@ -160,6 +161,7 @@ async def test_rate_limit_keeps_knowledge(hass, aioclient_mock, fixture):
 
 
 async def test_auth_error_triggers_reauth(hass, aioclient_mock, fixture):
+    aioclient_mock.get(f"{BASE}/months/current", json=fixture("month"))
     aioclient_mock.get(f"{BASE}/accounts", status=401, json={"error": {"detail": "bad"}})
     coord, _ = await _make(hass)
     with pytest.raises(ConfigEntryAuthFailed):
@@ -256,6 +258,7 @@ async def test_network_error_keeps_knowledge(hass, aioclient_mock, fixture):
     await _poll(coord)
     before = dict(coord.store.knowledge)
     aioclient_mock.clear_requests()
+    aioclient_mock.get(f"{BASE}/months/current", json=fixture("month"))
     aioclient_mock.get(f"{BASE}/accounts", exc=aiohttp.ClientError("down"))
     with pytest.raises(UpdateFailed):
         await coord._async_update_data()
@@ -280,3 +283,49 @@ async def test_event_only_for_imported_transactions(hass, aioclient_mock, fixtur
     assert [e.data["transaction_id"] for e in events] == ["t-bank"]
     assert "t-manual" in coord.data.transactions
     assert "t-manual" in coord.store.seen_transaction_ids
+
+
+async def test_month_rollover_refetches_categories(hass, aioclient_mock, fixture):
+    from pytest_homeassistant_custom_component.test_util.aiohttp import (
+        AiohttpClientMockResponse,
+    )
+
+    october = fixture("month")
+    october["data"]["month"]["month"] = "2026-10-01"
+    _register(aioclient_mock, fixture, month=october)
+    coord, _ = await _make(hass)
+    await _poll(coord)
+    assert coord.data.month == "2026-10-01"
+    assert coord.data.categories["c-gas"].budgeted == Decimal(200)
+
+    full = fixture("categories")
+    full["data"]["server_knowledge"] = 1102
+    for group in full["data"]["category_groups"]:
+        for cat in group["categories"]:
+            if cat["id"] == "c-gas":
+                cat["budgeted"] = 0
+    seen = []
+
+    async def categories(method, url, data):
+        seen.append(dict(url.query))
+        body = full if "last_knowledge_of_server" not in url.query else {
+            "data": {"category_groups": [], "server_knowledge": 1102}
+        }
+        return AiohttpClientMockResponse(method, url, json=body)
+
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(f"{BASE}/accounts", json=fixture("accounts"))
+    aioclient_mock.get(f"{BASE}/categories", side_effect=categories)
+    aioclient_mock.get(f"{BASE}/transactions", json={"data": {"transactions": [], "server_knowledge": 1103}})
+    aioclient_mock.get(f"{BASE}/months/current", json=fixture("month"))
+
+    await _poll(coord)
+    assert coord.data.month == "2026-11-01"
+    assert seen == [{}]  # one full (no knowledge) categories fetch
+    assert coord.data.categories["c-gas"].budgeted == Decimal(0)
+    assert coord.store.knowledge["categories"] == 1102
+
+    # same month again: delta request, not a full refetch
+    await _poll(coord)
+    assert seen[-1] == {"last_knowledge_of_server": "1102"}
+    assert len(seen) == 2

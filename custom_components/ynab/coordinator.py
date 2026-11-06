@@ -120,23 +120,30 @@ class YnabCoordinator(DataUpdateCoordinator[YnabData]):
             dt_util.now().date() - timedelta(days=WINDOW_DAYS) if full else None
         )
         try:
+            month = await self.client.get_month(self.plan_id, "current", poll=True)
+            # YNAB's category delta can omit a pure month change, which would
+            # leave last month's assigned/activity/balance in place.
+            rolled_over = (
+                not full and self.data is not None and month["month"] != self.data.month
+            )
             raw_accounts, k_accounts = await self.client.get_accounts(
                 self.plan_id, since.get("accounts"), poll=True
             )
             raw_groups, k_categories = await self.client.get_categories(
-                self.plan_id, since.get("categories"), poll=True
+                self.plan_id, None if rolled_over else since.get("categories"), poll=True
             )
             raw_txs, k_transactions = await self.client.get_transactions(
                 self.plan_id, since.get("transactions"), since_date, poll=True
             )
-            month = await self.client.get_month(self.plan_id, "current", poll=True)
         except YnabAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except (YnabError, aiohttp.ClientError) as err:
             raise UpdateFailed(str(err)) from err
 
         old = None if full else self.data
-        new = self._merge(old, raw_accounts, raw_groups, raw_txs, month)
+        new = self._merge(
+            old, raw_accounts, raw_groups, raw_txs, month, full_categories=rolled_over
+        )
 
         # Commit the merged snapshot first, then advance knowledge, so a
         # failure in _after_sync can never lose a delta.
@@ -156,6 +163,8 @@ class YnabCoordinator(DataUpdateCoordinator[YnabData]):
         raw_groups: list[dict],
         raw_txs: list[dict],
         month: dict,
+        *,
+        full_categories: bool = False,
     ) -> YnabData:
         accounts = dict(old.accounts) if old else {}
         for raw in raw_accounts:
@@ -165,7 +174,7 @@ class YnabCoordinator(DataUpdateCoordinator[YnabData]):
             else:
                 accounts[acc.id] = acc
 
-        categories = dict(old.categories) if old else {}
+        categories = dict(old.categories) if old and not full_categories else {}
         for cat in categories_from_groups(raw_groups):
             if cat.deleted:
                 categories.pop(cat.id, None)
