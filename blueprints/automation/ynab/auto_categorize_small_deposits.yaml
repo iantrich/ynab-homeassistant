@@ -1,0 +1,74 @@
+blueprint:
+  name: Auto-categorize small deposits
+  author: iantrich
+  domain: automation
+  description: >
+    Categorizes and approves small imported deposits, such as daily cashback,
+    into one category. Only inflows below the maximum amount match.
+
+
+    The category the transaction arrives with is ignored: feeds such as Apple
+    Savings pre-fill a wrong one.
+  source_url: https://github.com/iantrich/ynab-homeassistant/blob/main/blueprints/automation/ynab/auto_categorize_small_deposits.yaml
+  input:
+    account_name:
+      name: Account name
+      description: The YNAB account the deposits are imported into (not case sensitive).
+      selector:
+        text:
+    import_payee:
+      name: Import payee
+      description: The payee name as imported by the bank feed.
+      default: Deposit
+      selector:
+        text:
+    max_amount:
+      name: Maximum amount
+      description: Deposits below this amount match.
+      default: 25
+      selector:
+        number:
+          min: 0
+          mode: box
+          step: any
+    category:
+      name: Category
+      description: Category name or id.
+      selector:
+        text:
+    approve:
+      name: Approve the transaction
+      default: true
+      selector:
+        boolean:
+
+mode: queued
+max: 50
+
+variables:
+  account_name: !input account_name
+  import_payee: !input import_payee
+  max_amount: !input max_amount
+  category: !input category
+  approve: !input approve
+
+triggers:
+  - trigger: event
+    event_type: ynab_transaction_imported
+
+conditions:
+  - condition: template
+    value_template: >
+      {% set e = trigger.event.data %}
+      {{ (e.account_name | string | lower) == (account_name | string | lower)
+         and (e.import_payee_name | string | lower) == (import_payee | string | lower)
+         and e.direction == 'inflow'
+         and (e.amount | float(0)) < (max_amount | float(0)) }}
+
+actions:
+  - action: ynab.update_transaction
+    data:
+      config_entry_id: "{{ trigger.event.data.entry_id }}"
+      transaction_id: "{{ trigger.event.data.transaction_id }}"
+      category: "{{ category }}"
+      approve: "{{ approve }}"

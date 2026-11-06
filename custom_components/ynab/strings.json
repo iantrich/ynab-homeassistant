@@ -1,0 +1,105 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to YNAB",
+        "description": "Create a personal access token in YNAB under Account Settings, Developer Settings. It is stored by Home Assistant only.",
+        "data": {
+          "api_token": "Personal access token"
+        }
+      },
+      "plan": {
+        "title": "Choose a plan",
+        "description": "Pick the YNAB plan (budget) to track.",
+        "data": {
+          "plan_id": "Plan"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate YNAB",
+        "description": "The token for {plan_name} no longer works. Enter a new personal access token.",
+        "data": {
+          "api_token": "Personal access token"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "YNAB rejected that token.",
+      "cannot_connect": "Could not reach YNAB. Try again shortly.",
+      "wrong_account": "That token cannot access this plan."
+    },
+    "abort": {
+      "already_configured": "That plan is already set up.",
+      "no_plans": "No plans were found for that token.",
+      "reauth_successful": "The token was updated."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "YNAB options",
+        "menu_options": {
+          "general": "General",
+          "stages": "Allocation stages",
+          "low_overrides": "Low-bucket overrides"
+        }
+      },
+      "general": {
+        "title": "General",
+        "data": {
+          "scan_minutes": "Poll interval (minutes)",
+          "low_share": "Low threshold (share of target)",
+          "entity_accounts": "Accounts to create entities for",
+          "entity_categories": "Categories to create entities for"
+        }
+      },
+      "stages": {
+        "title": "Allocation stages",
+        "description": "Assign each category group to a waterfall stage. Per-category overrides are set with the set_stage_mapping tool.",
+        "data": {
+          "overflow_category_id": "Overflow category"
+        }
+      },
+      "low_overrides": {
+        "title": "Low-bucket overrides",
+        "description": "Override the low threshold for one category. Leave the share empty to clear its override. Current overrides: {current}",
+        "data": {
+          "category_id": "Category",
+          "share": "Low threshold (share of target)"
+        }
+      }
+    },
+    "abort": {
+      "not_loaded": "Load the integration before changing these options."
+    }
+  },
+  "selector": {
+    "stage": {
+      "options": {
+        "bills": "Bills",
+        "everyday": "Everyday",
+        "fun": "Fun",
+        "savings": "Savings",
+        "none": "Not allocated"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "ready_to_assign": {
+        "name": "Ready to Assign"
+      },
+      "unapproved": {
+        "name": "Unapproved transactions"
+      },
+      "proposals": {
+        "name": "Pending proposals"
+      }
+    },
+    "binary_sensor": {
+      "low": {
+        "name": "{category} low"
+      }
+    }
+  }
+}

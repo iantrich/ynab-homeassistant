@@ -1,0 +1,255 @@
+update_transaction:
+  name: Update transaction
+  description: Change a transaction's category, payee or memo, and optionally approve it.
+  fields:
+    config_entry_id:
+      name: YNAB entry
+      description: The YNAB config entry to use.
+      required: true
+      selector:
+        config_entry:
+          integration: ynab
+    transaction_id:
+      name: Transaction ID
+      description: The YNAB transaction id.
+      required: true
+      example: "7c1a2b3c-0000-0000-0000-000000000000"
+      selector:
+        text:
+    category:
+      name: Category
+      description: Category id or exact name.
+      example: Groceries
+      selector:
+        text:
+    payee_name:
+      name: Payee
+      description: The payee name to set.
+      example: Costco
+      selector:
+        text:
+    memo:
+      name: Memo
+      description: The memo to set (up to 500 characters).
+      selector:
+        text:
+    approve:
+      name: Approve
+      description: Also approve the transaction.
+      default: false
+      selector:
+        boolean:
+    force:
+      name: Force
+      description: Allow changing an already-approved transaction.
+      default: false
+      selector:
+        boolean:
+update_transactions:
+  name: Update transactions
+  description: Apply a list of transaction changes in one request. Nothing is sent unless every update is valid.
+  fields:
+    config_entry_id:
+      name: YNAB entry
+      description: The YNAB config entry to use.
+      required: true
+      selector:
+        config_entry:
+          integration: ynab
+    updates:
+      name: Updates
+      required: true
+      description: List of updates; each has transaction_id and optional category, payee_name, memo, approve, force.
+      example: '[{"transaction_id": "abc", "category": "Groceries", "approve": true}]'
+      selector:
+        object:
+assign_money:
+  name: Assign money
+  description: Set or add to the amount assigned to a category for a month.
+  fields:
+    config_entry_id:
+      name: YNAB entry
+      description: The YNAB config entry to use.
+      required: true
+      selector:
+        config_entry:
+          integration: ynab
+    category:
+      name: Category
+      required: true
+      description: Category id or exact name.
+      selector:
+        text:
+    amount:
+      name: Amount
+      required: true
+      description: Amount in the plan currency.
+      selector:
+        number:
+          mode: box
+          step: any
+    month:
+      name: Month
+      default: current
+      description: '"current" or a month as YYYY-MM-01.'
+      selector:
+        text:
+    mode:
+      name: Mode
+      description: Whether to set the assigned amount or add to it.
+      default: set
+      selector:
+        select:
+          options:
+            - set
+            - add
+refresh:
+  name: Refresh
+  description: Poll YNAB now.
+  fields:
+    config_entry_id:
+      name: YNAB entry
+      description: The YNAB config entry to use.
+      required: true
+      selector:
+        config_entry:
+          integration: ynab
+propose_transaction_update:
+  name: Propose transaction update
+  description: Record a suggested transaction change. Nothing changes in YNAB until it is approved.
+  fields:
+    config_entry_id:
+      name: YNAB entry
+      description: The YNAB config entry to use.
+      required: true
+      selector:
+        config_entry:
+          integration: ynab
+    transaction_id:
+      name: Transaction ID
+      description: The YNAB transaction id.
+      required: true
+      selector:
+        text:
+    category:
+      name: Category
+      description: Category id or exact name.
+      selector:
+        text:
+    payee_name:
+      name: Payee
+      description: The payee name to set.
+      selector:
+        text:
+    memo:
+      name: Memo
+      description: The memo to set (up to 500 characters).
+      selector:
+        text:
+    approve:
+      name: Approve
+      description: Whether approving the proposal also approves the transaction (default true).
+      selector:
+        boolean:
+approve_proposals:
+  name: Approve proposals
+  description: Apply pending proposals to YNAB.
+  fields:
+    config_entry_id:
+      name: YNAB entry
+      description: The YNAB config entry to use.
+      required: true
+      selector:
+        config_entry:
+          integration: ynab
+    proposal_ids:
+      name: Proposal IDs
+      description: The ids of the proposals to apply.
+      required: true
+      example: '["p-1a2b3c"]'
+      selector:
+        object:
+reject_proposals:
+  name: Reject proposals
+  description: Dismiss pending proposals without changing YNAB.
+  fields:
+    config_entry_id:
+      name: YNAB entry
+      description: The YNAB config entry to use.
+      required: true
+      selector:
+        config_entry:
+          integration: ynab
+    proposal_ids:
+      name: Proposal IDs
+      description: The ids of the proposals to dismiss.
+      required: true
+      example: '["p-1a2b3c"]'
+      selector:
+        object:
+list_recurring:
+  name: List recurring
+  description: Return transactions that recur monthly (response only).
+  fields:
+    config_entry_id:
+      name: YNAB entry
+      description: The YNAB config entry to use.
+      required: true
+      selector:
+        config_entry:
+          integration: ynab
+list_proposals:
+  name: List proposals
+  description: Return proposals (response only).
+  fields:
+    config_entry_id:
+      name: YNAB entry
+      description: The YNAB config entry to use.
+      required: true
+      selector:
+        config_entry:
+          integration: ynab
+    status:
+      name: Status
+      description: Which proposals to return.
+      default: pending
+      selector:
+        select:
+          options:
+            - pending
+            - approved
+            - rejected
+            - stale
+            - applied
+            - partial
+            - superseded
+            - all
+propose_allocation:
+  name: Propose allocation
+  description: Propose how to assign Ready to Assign across categories in priority order. Nothing changes in YNAB until the proposal is approved or applied.
+  fields:
+    config_entry_id:
+      name: YNAB entry
+      description: The YNAB config entry to use.
+      required: true
+      selector:
+        config_entry:
+          integration: ynab
+apply_allocation:
+  name: Apply allocation
+  description: Apply a pending allocation proposal to YNAB.
+  fields:
+    config_entry_id:
+      name: YNAB entry
+      description: The YNAB config entry to use.
+      required: true
+      selector:
+        config_entry:
+          integration: ynab
+    proposal_id:
+      name: Proposal ID
+      description: The id of the allocation proposal.
+      required: true
+      example: "a-1a2b3c"
+      selector:
+        text:

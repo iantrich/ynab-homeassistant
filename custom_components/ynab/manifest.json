@@ -1,0 +1,14 @@
+{
+  "domain": "ynab",
+  "name": "YNAB",
+  "codeowners": [
+    "@iantrich"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/iantrich/ynab-homeassistant",
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/iantrich/ynab-homeassistant/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

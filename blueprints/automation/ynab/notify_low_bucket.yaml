@@ -1,0 +1,39 @@
+blueprint:
+  name: Notify when a category runs low
+  author: iantrich
+  domain: automation
+  description: >
+    Runs your notification action when one of the selected YNAB "low" binary
+    sensors turns on. The message names the category and how much is left.
+  source_url: https://github.com/iantrich/ynab-homeassistant/blob/main/blueprints/automation/ynab/notify_low_bucket.yaml
+  input:
+    low_sensors:
+      name: Low category sensors
+      selector:
+        entity:
+          domain: binary_sensor
+          integration: ynab
+          multiple: true
+    notify_action:
+      name: Notification action
+      description: >
+        Runs with a `message` variable such as "Groceries is low: 12.50 left".
+      selector:
+        action:
+
+mode: queued
+max: 20
+
+triggers:
+  - trigger: state
+    entity_id: !input low_sensors
+    from: "off"
+    to: "on"
+
+actions:
+  - variables:
+      category: "{{ trigger.to_state.attributes.category | default(trigger.to_state.name) }}"
+      available: "{{ trigger.to_state.attributes.available | float(0) }}"
+      message: "{{ category }} is low: {{ '%.2f' | format(available) }} left"
+  - alias: Notify
+    sequence: !input notify_action
