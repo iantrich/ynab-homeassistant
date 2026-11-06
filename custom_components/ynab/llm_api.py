@@ -37,6 +37,10 @@ SOURCE = "llm"
 UNAPPROVED_LIMIT = 25
 ACTIVITY_WINDOW = timedelta(hours=24)
 
+CONFIRM = (
+    "Show the user exactly what will change and get a clear yes before calling this."
+)
+
 RATE_LIMITED = (
     "YNAB is rate-limiting requests right now. Nothing was changed. Tell the "
     "user and suggest trying again later; do not retry immediately, which "
@@ -46,9 +50,10 @@ RATE_LIMITED = (
 API_PROMPT = (
     "Use these tools to read the user's YNAB budget and to act on it. Amounts "
     "are in the plan's currency (see get_summary); outflows are negative.\n"
-    "Before any write -- update_transactions, assign_money, approve_proposals "
-    "or apply_allocation -- show the user exactly what will change and get a "
-    "clear yes. Reading, proposing and rejecting need no confirmation.\n"
+    "Before any write -- update_transactions, assign_money, approve_proposals, "
+    "reject_proposals, apply_allocation or set_stage_mapping -- show the user "
+    "exactly what will change and get a clear yes. Reading and "
+    "propose_allocation (which changes nothing in YNAB) need no confirmation.\n"
     "Start with get_summary for Ready to Assign, low categories, unapproved "
     "transactions and pending proposals. To spread Ready to Assign, call "
     "propose_allocation, show the moves, and only after a yes call "
@@ -68,6 +73,10 @@ WRITE_ADDITIVE = llm.ToolAnnotations(
 )
 WRITE_DESTRUCTIVE = llm.ToolAnnotations(
     read_only=False, destructive=True, idempotent=True, open_world=True
+)
+# assign_money's "add" mode is not idempotent: repeating it adds again.
+WRITE_DESTRUCTIVE_REPEATABLE = llm.ToolAnnotations(
+    read_only=False, destructive=True, idempotent=False, open_world=True
 )
 WRITE = llm.ToolAnnotations(
     read_only=False, destructive=False, idempotent=True, open_world=True
@@ -365,7 +374,7 @@ class ListProposalsTool(YnabTool):
             probatio.Optional(
                 "status",
                 default="pending",
-                description="pending (default), approved, rejected, stale, applied or all.",
+                description="pending (default), approved, rejected, stale, applied, partial or all.",
             ): probatio.In(
                 ["pending", "approved", "rejected", "stale", "applied", "partial", "all"]
             ),
@@ -443,8 +452,8 @@ class UpdateTransactionsTool(YnabTool):
     title = "Update YNAB transactions"
     description = (
         "Change the category, payee, memo or approval of up to 100 "
-        "transactions in one all-or-nothing call. Show the user the changes "
-        "and get a clear yes first. Approved transactions are refused unless force is true."
+        "transactions in one all-or-nothing call. "
+        f"Approved transactions are refused unless force is true. {CONFIRM}"
     )
     parameters = probatio.Schema(
         {
@@ -466,8 +475,8 @@ class AssignMoneyTool(YnabTool):
     name = f"{TOOL_PREFIX}assign_money"
     title = "Assign YNAB money"
     description = (
-        "Set, or add to, the amount assigned to a category for a month. Show "
-        "the user the change and get a clear yes first."
+        "Set, or add to, the amount assigned to a category for a month. "
+        + CONFIRM
     )
     parameters = probatio.Schema(
         {
@@ -487,7 +496,7 @@ class AssignMoneyTool(YnabTool):
             ): probatio.In(["set", "add"]),
         }
     )
-    annotations = WRITE_DESTRUCTIVE
+    annotations = WRITE_DESTRUCTIVE_REPEATABLE
 
     async def _run(self, args: dict[str, Any]) -> JsonObjectType:
         try:
@@ -504,7 +513,6 @@ class AssignMoneyTool(YnabTool):
         return {"category": args["category"], "assigned": assigned}
 
 
-_IDS = probatio.Required("ids", description="Proposal ids, from list_proposals."), [str]
 
 
 class ApproveProposalsTool(YnabTool):
@@ -514,7 +522,7 @@ class ApproveProposalsTool(YnabTool):
     title = "Approve YNAB proposals"
     description = (
         "Approve pending proposals, applying them to YNAB (transaction changes "
-        "and allocations). Show the user what each does and get a clear yes first."
+        "and allocations). " + CONFIRM
     )
     parameters = probatio.Schema(
         {probatio.Required("ids", description="Proposal ids, from list_proposals."): [str]}
@@ -530,7 +538,7 @@ class RejectProposalsTool(YnabTool):
 
     name = f"{TOOL_PREFIX}reject_proposals"
     title = "Reject YNAB proposals"
-    description = "Dismiss pending proposals without changing YNAB."
+    description = "Dismiss pending proposals without changing YNAB. " + CONFIRM
     parameters = probatio.Schema(
         {probatio.Required("ids", description="Proposal ids, from list_proposals."): [str]}
     )
@@ -564,7 +572,7 @@ class ApplyAllocationTool(YnabTool):
     title = "Apply YNAB allocation"
     description = (
         "Apply a pending allocation proposal, adding the moves to what is "
-        "assigned. Show the user the moves and get a clear yes first."
+        "assigned. " + CONFIRM
     )
     parameters = probatio.Schema(
         {
@@ -629,7 +637,7 @@ class SetStageMappingTool(GetStageMappingTool):
         "Map category groups and categories to allocation stages (bills, "
         "everyday, fun, savings), or 'none' to remove a mapping, and set the "
         "overflow category that receives leftover money. Only the entries "
-        "given are changed. Names are matched case-insensitively."
+        "given are changed. Names are matched case-insensitively. " + CONFIRM
     )
     parameters = probatio.Schema(
         {

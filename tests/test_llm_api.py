@@ -1,6 +1,8 @@
 """The YNAB LLM API, exercised through Home Assistant's own MCP formatter."""
 
+import dataclasses
 import json
+from datetime import date, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -84,6 +86,7 @@ async def test_annotations(hass, aioclient_mock, fixture):
         assert hints[n].readOnlyHint is True and hints[n].destructiveHint is False, n
     for n in ("update_transactions", "assign_money", "approve_proposals", "apply_allocation"):
         assert hints[n].readOnlyHint is False and hints[n].destructiveHint is True, n
+    assert hints["assign_money"].idempotentHint is False
     assert hints["reject_proposals"].destructiveHint is False
     assert hints["set_stage_mapping"].readOnlyHint is False
     assert hints["propose_allocation"].destructiveHint is False
@@ -232,3 +235,58 @@ async def test_prompt_and_registration(hass, aioclient_mock, fixture):
     with pytest.raises(HomeAssistantError):
         await llm.async_get_api(hass, api_id, llm.LLMContext(
             platform="test", context=None, language="en", assistant=None, device_id=None))
+
+
+async def test_every_write_tool_demands_confirmation(hass, aioclient_mock, fixture):
+    entry = await _setup(hass, aioclient_mock, fixture)
+    writers = {
+        n: t for n, t in tools(entry).items()
+        if not t.annotations.read_only and n != "propose_allocation"
+    }
+    assert set(writers) == {
+        "update_transactions", "assign_money", "approve_proposals",
+        "reject_proposals", "apply_allocation", "set_stage_mapping",
+    }
+    for name, tool in writers.items():
+        assert "get a clear yes" in tool.description, name
+    for name in writers:
+        assert name in llm_api.API_PROMPT, name
+    assert "rejecting need no confirmation" not in llm_api.API_PROMPT
+
+
+async def test_ambiguous_names_list_candidates(hass, aioclient_mock, fixture):
+    entry = await _setup(hass, aioclient_mock, fixture)
+    cats = entry.runtime_data.coordinator.data.categories
+    groc = cats["c-groceries"]
+    cats["c-dup"] = dataclasses.replace(
+        groc, id="c-dup", group_id="g-dup", group_name="Bills"
+    )
+    store = entry.runtime_data.store
+    before = json.dumps(store.stage_mapping, sort_keys=True)
+    t = tools(entry)["set_stage_mapping"]
+    with pytest.raises(HomeAssistantError, match="ambiguous.*c-dup.*c-groceries|ambiguous.*c-groceries.*c-dup"):
+        await _call(t, categories={"Groceries": "everyday"})
+    with pytest.raises(HomeAssistantError, match="ambiguous.*g-dup"):
+        await _call(t, groups={"Bills": "bills"})
+    assert json.dumps(store.stage_mapping, sort_keys=True) == before
+
+
+async def test_summary_caps_unapproved_and_windows_activity(hass, aioclient_mock, fixture):
+    entry = await _setup(hass, aioclient_mock, fixture)
+    data = entry.runtime_data.coordinator.data
+    base = next(iter(data.transactions.values()))
+    for i in range(30):
+        data.transactions[f"x{i}"] = dataclasses.replace(
+            base, id=f"x{i}", approved=False, deleted=False,
+            date=date(2026, 10, 1) + timedelta(days=i % 28),
+        )
+    store = entry.runtime_data.store
+    store.log("old_event", source="user")
+    store.activity[-1]["at"] = "2026-11-04T10:00:00+00:00"  # 26 h before frozen now
+    store.log("new_event", source="user")
+    summary = (await _call(tools(entry)["get_summary"])).data
+    assert len(summary["unapproved"]) == 25
+    dates = [t["date"] for t in summary["unapproved"]]
+    assert dates == sorted(dates, reverse=True)
+    kinds = [a["kind"] for a in summary["activity_since"]]
+    assert "new_event" in kinds and "old_event" not in kinds
