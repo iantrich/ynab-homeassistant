@@ -15,6 +15,10 @@ from .const import API_BASE, PLAN_SEGMENT
 _LOGGER = logging.getLogger(__name__)
 
 _WINDOW_SECONDS = 3600
+# YNAB allows 200 requests/hour. Polls may use all of it; everything else
+# (actions, extra reads) stops at REQUEST_BUDGET so polling is never starved.
+REQUEST_BUDGET = 180
+REQUEST_HARD_LIMIT = 200
 _TIMEOUT = aiohttp.ClientTimeout(total=30)
 
 
@@ -69,10 +73,17 @@ class YnabClient:
         *,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        poll: bool = False,
     ) -> dict[str, Any]:
         """Send a request and return the response's ``data`` object."""
         url = f"{API_BASE}{path}"
         self._prune()
+        used = len(self._request_times)
+        if used >= REQUEST_HARD_LIMIT or (used >= REQUEST_BUDGET and not poll):
+            raise YnabRateLimitError(
+                f"Local request budget reached ({used} requests in the last hour); "
+                "try again later"
+            )
         self._request_times.append(time.time())
         try:
             async with self._session.request(
@@ -119,36 +130,45 @@ class YnabClient:
         return (await self._request("GET", f"/{PLAN_SEGMENT}"))["plans"]
 
     async def get_accounts(
-        self, plan_id: str, since: int | None
+        self, plan_id: str, since: int | None, *, poll: bool = False
     ) -> tuple[list[dict[str, Any]], int]:
         data = await self._request(
-            "GET", f"{self._plan(plan_id)}/accounts", params=_delta(since)
+            "GET", f"{self._plan(plan_id)}/accounts", params=_delta(since), poll=poll
         )
         return data["accounts"], data["server_knowledge"]
 
     async def get_categories(
-        self, plan_id: str, since: int | None
+        self, plan_id: str, since: int | None, *, poll: bool = False
     ) -> tuple[list[dict[str, Any]], int]:
         """Return category groups, each with nested ``categories``."""
         data = await self._request(
-            "GET", f"{self._plan(plan_id)}/categories", params=_delta(since)
+            "GET", f"{self._plan(plan_id)}/categories", params=_delta(since), poll=poll
         )
         return data["category_groups"], data["server_knowledge"]
 
     async def get_transactions(
-        self, plan_id: str, since: int | None, since_date: date | None
+        self,
+        plan_id: str,
+        since: int | None,
+        since_date: date | None,
+        *,
+        poll: bool = False,
     ) -> tuple[list[dict[str, Any]], int]:
         params = _delta(since)
         if since_date is not None:
             params["since_date"] = since_date.isoformat()
         data = await self._request(
-            "GET", f"{self._plan(plan_id)}/transactions", params=params
+            "GET", f"{self._plan(plan_id)}/transactions", params=params, poll=poll
         )
         return data["transactions"], data["server_knowledge"]
 
-    async def get_month(self, plan_id: str, month: str) -> dict[str, Any]:
+    async def get_month(
+        self, plan_id: str, month: str, *, poll: bool = False
+    ) -> dict[str, Any]:
         """``month`` is ``YYYY-MM-01`` or ``current``."""
-        data = await self._request("GET", f"{self._plan(plan_id)}/months/{month}")
+        data = await self._request(
+            "GET", f"{self._plan(plan_id)}/months/{month}", poll=poll
+        )
         return data["month"]
 
     async def update_transactions(

@@ -121,15 +121,15 @@ class YnabCoordinator(DataUpdateCoordinator[YnabData]):
         )
         try:
             raw_accounts, k_accounts = await self.client.get_accounts(
-                self.plan_id, since.get("accounts")
+                self.plan_id, since.get("accounts"), poll=True
             )
             raw_groups, k_categories = await self.client.get_categories(
-                self.plan_id, since.get("categories")
+                self.plan_id, since.get("categories"), poll=True
             )
             raw_txs, k_transactions = await self.client.get_transactions(
-                self.plan_id, since.get("transactions"), since_date
+                self.plan_id, since.get("transactions"), since_date, poll=True
             )
-            month = await self.client.get_month(self.plan_id, "current")
+            month = await self.client.get_month(self.plan_id, "current", poll=True)
         except YnabAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except (YnabError, aiohttp.ClientError) as err:

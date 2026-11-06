@@ -137,3 +137,38 @@ async def test_set_category_budgeted(client, aioclient_mock):
     cat = await client.set_category_budgeted(PLAN, "2026-11-01", "c1", 5000)
     assert cat["budgeted"] == 5000
     assert aioclient_mock.mock_calls[0][2] == {"category": {"budgeted": 5000}}
+
+
+def _fill(client, n):
+    import time
+
+    client._request_times.extend([time.time()] * n)
+
+
+async def test_budget_refuses_writes_and_reads_but_not_polls(client, aioclient_mock, fixture):
+    aioclient_mock.patch(f"{BASE}/transactions", json={"data": {"transactions": []}})
+    aioclient_mock.get(f"{BASE}/months/current", json=fixture("month"))
+    aioclient_mock.get(f"{BASE}/months/2026-11-01", json=fixture("month"))
+    _fill(client, 180)
+    with pytest.raises(YnabRateLimitError, match="Local request budget"):
+        await client.update_transactions(PLAN, [{"id": "x", "memo": "m"}])
+    with pytest.raises(YnabRateLimitError, match="Local request budget"):
+        await client.get_month(PLAN, "2026-11-01")
+    assert aioclient_mock.call_count == 0
+    await client.get_month(PLAN, "current", poll=True)
+    assert aioclient_mock.call_count == 1
+
+
+async def test_budget_refuses_everything_at_200(client, aioclient_mock, fixture):
+    aioclient_mock.get(f"{BASE}/months/current", json=fixture("month"))
+    _fill(client, 200)
+    with pytest.raises(YnabRateLimitError, match="Local request budget"):
+        await client.get_month(PLAN, "current", poll=True)
+    assert aioclient_mock.call_count == 0
+
+
+async def test_below_budget_requests_go_out(client, aioclient_mock, fixture):
+    aioclient_mock.get(f"{BASE}/months/2026-11-01", json=fixture("month"))
+    _fill(client, 179)
+    await client.get_month(PLAN, "2026-11-01")
+    assert aioclient_mock.call_count == 1
