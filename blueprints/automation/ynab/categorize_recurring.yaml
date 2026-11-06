@@ -1,0 +1,130 @@
+blueprint:
+  name: Categorize a recurring transaction
+  author: iantrich
+  domain: automation
+  description: >
+    Categorizes an imported YNAB transaction that matches a fixed pattern:
+    an account, an import payee, a direction, an exact amount and a window of
+    days in the month. Use it for a mortgage, rent or any bill that always
+    lands the same way.
+
+
+    Choose `propose` to record a suggestion you approve later, or `apply` to
+    write the change to YNAB right away.
+
+
+    Do not look for an empty category. Feeds such as Apple Savings pre-fill a
+    wrong category on import, so this blueprint ignores the category the
+    transaction arrives with.
+  source_url: https://github.com/iantrich/ynab-homeassistant/blob/main/blueprints/automation/ynab/categorize_recurring.yaml
+  input:
+    account_name:
+      name: Account name
+      description: The YNAB account the transaction is imported into (not case sensitive).
+      selector:
+        text:
+    import_payee:
+      name: Import payee
+      description: The payee name as imported by the bank feed, for example Withdrawal.
+      default: Withdrawal
+      selector:
+        text:
+    direction:
+      name: Direction
+      selector:
+        select:
+          options:
+            - inflow
+            - outflow
+    amount:
+      name: Amount
+      description: The exact amount, as a positive number (623.98 for an outflow of 623.98).
+      selector:
+        number:
+          min: 0
+          mode: box
+          step: any
+    day_from:
+      name: First day of the month
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 31
+          mode: box
+    day_to:
+      name: Last day of the month
+      default: 31
+      selector:
+        number:
+          min: 1
+          max: 31
+          mode: box
+    payee_name:
+      name: New payee name
+      description: Optional. Leave empty to keep the imported payee.
+      default: ""
+      selector:
+        text:
+    category:
+      name: Category
+      description: Category name or id.
+      selector:
+        text:
+    mode:
+      name: Mode
+      description: Propose records a suggestion to approve later. Apply changes YNAB now.
+      default: propose
+      selector:
+        select:
+          options:
+            - apply
+            - propose
+    approve:
+      name: Approve the transaction
+      description: Also approve the transaction (when proposing, once the proposal is approved).
+      default: true
+      selector:
+        boolean:
+
+mode: queued
+max: 50
+
+variables:
+  account_name: !input account_name
+  import_payee: !input import_payee
+  direction: !input direction
+  amount: !input amount
+  day_from: !input day_from
+  day_to: !input day_to
+  payee_name: !input payee_name
+  category: !input category
+  mode: !input mode
+  approve: !input approve
+
+triggers:
+  - trigger: event
+    event_type: ynab_transaction_imported
+
+conditions:
+  - condition: template
+    value_template: >
+      {% set e = trigger.event.data %}
+      {{ (e.account_name | string | lower) == (account_name | string | lower)
+         and (e.import_payee_name | string | lower) == (import_payee | string | lower)
+         and e.direction == direction
+         and (e.amount | float(0) | abs | round(2)) == (amount | float(0) | round(2))
+         and (day_from | int) <= (e.day | int) <= (day_to | int) }}
+
+actions:
+  - action: >
+      {{ 'ynab.update_transaction' if mode == 'apply'
+         else 'ynab.propose_transaction_update' }}
+    data: >
+      {% set d = {
+           'config_entry_id': trigger.event.data.entry_id,
+           'transaction_id': trigger.event.data.transaction_id,
+           'category': category,
+           'approve': approve
+         } %}
+      {{ d | combine({'payee_name': payee_name} if payee_name else {}) }}
