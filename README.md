@@ -33,21 +33,23 @@ integration serves to MCP clients, with sign-in handled by Home Assistant.
 
 ## Installation
 
-This integration is distributed the same way as
-Paprika LLM API: as a custom
-repository or by copying files.
+**As a custom repository.** Add this repository as a custom repository in
+Home Assistant's integration marketplace and download the YNAB integration.
 
-1. Add this repository as a custom integration repository and download it, or
-   copy `custom_components/ynab` into `config/custom_components/`.
-2. Restart Home Assistant.
-3. **Settings → Devices & Services → Add Integration → YNAB**, and paste your
+**By hand.** Download or clone this repository, then copy the
+`custom_components/ynab` folder into the `custom_components` folder in your
+Home Assistant configuration directory (the one that holds
+`configuration.yaml`), so you end up with
+`config/custom_components/ynab/manifest.json`. Create `custom_components` if it
+does not exist.
+
+Then:
+
+1. Restart Home Assistant.
+2. **Settings → Devices & Services → Add Integration → YNAB**, and paste your
    personal access token.
-4. Pick the budget (YNAB calls it a plan), then the accounts and categories you
+3. Pick the budget (YNAB calls it a plan), then the accounts and categories you
    want entities for.
-
-Note: Home Assistant 2026.11 replaced HACS with its built-in marketplace.
-Whether you add the repository there or copy the folder by hand, the integration
-is the same.
 
 ### Getting a personal access token
 
@@ -76,6 +78,10 @@ they all draw from the same 200. Create a separate token for each if you can.
 | Pending proposals | sensor, a count |
 | One sensor per chosen account | the account balance |
 | One sensor per chosen category | the available balance |
+
+Saving the General options turns "all accounts" and "all categories" into an
+explicit list, so accounts or categories you add in YNAB later need selecting
+in the options before they get entities.
 | `<Category> low` | binary sensor, on when the category is low; attributes `category`, `available`, `target`, `share` |
 
 ## Events

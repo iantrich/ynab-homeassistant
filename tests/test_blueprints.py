@@ -224,3 +224,16 @@ async def test_notify_low_bucket(hass: HomeAssistant) -> None:
     assert len(calls) == 1
     assert "Groceries" in calls[0].data["message"]
     assert "12.50" in calls[0].data["message"]
+
+
+def test_services_yaml_names_and_descriptions():
+    import yaml
+    from pathlib import Path
+
+    services = yaml.safe_load(
+        (Path(__file__).parents[1] / "custom_components/ynab/services.yaml").read_text()
+    )
+    for svc, spec in services.items():
+        assert spec.get("name") and spec.get("description"), svc
+        for field, fspec in spec.get("fields", {}).items():
+            assert fspec.get("name") and fspec.get("description"), f"{svc}.{field}"
